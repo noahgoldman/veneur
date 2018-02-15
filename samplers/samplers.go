@@ -3,13 +3,13 @@ package samplers
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/gob"
 	"fmt"
 	"math"
 	"strings"
 	"time"
 
 	"github.com/axiomhq/hyperloglog"
+	proto "github.com/gogo/protobuf/proto"
 	"github.com/stripe/veneur/tdigest"
 )
 
@@ -514,31 +514,20 @@ func (h *Histo) Flush(interval time.Duration, percentiles []float64, aggregates 
 	return metrics
 }
 
-// HistoValue is a serializable version of a Histo that will be sent as the
-// Value of a JSONMetric, gob-encoded.
-type HistoValue struct {
-	TDigest       *tdigest.MergingDigest
-	Weight        float64
-	Min           float64
-	Max           float64
-	Sum           float64
-	ReciprocalSum float64
-}
-
 // Export converts a Histogram into a JSONMetric
 func (h *Histo) Export() (JSONMetric, error) {
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	hval := HistoValue{
-		TDigest:       h.tDigest,
+	hval := &HistogramValue{
+		TDigest:       h.tDigest.Data(),
 		Weight:        h.weight,
 		Min:           h.min,
 		Max:           h.max,
 		Sum:           h.sum,
 		ReciprocalSum: h.reciprocalSum,
 	}
-	if err := enc.Encode(hval); err != nil {
-		return JSONMetric{}, err
+	out, err := proto.Marshal(hval)
+	if err != nil {
+		return JSONMetric{}, fmt.Errorf("failed to marshal the histogram "+
+			"value protobuf: %v", err)
 	}
 	return JSONMetric{
 		MetricKey: MetricKey{
@@ -547,17 +536,15 @@ func (h *Histo) Export() (JSONMetric, error) {
 			JoinedTags: strings.Join(h.Tags, ","),
 		},
 		Tags:  h.Tags,
-		Value: buf.Bytes(),
+		Value: out,
 	}, nil
 }
 
 // Combine merges the values of a histogram with another histogram
 // (marshalled as a byte slice)
 func (h *Histo) Combine(other []byte) error {
-	var val HistoValue
-	dec := gob.NewDecoder(bytes.NewReader(other))
-
-	if err := dec.Decode(&val); err != nil {
+	val := &HistogramValue{}
+	if err := proto.Unmarshal(other, val); err != nil {
 		// To support the old binary format, try to directly decode just
 		// a tdigest.  This should probably be removed in a future breaking
 		// release. This allows upgrading global instances first, while still
@@ -571,7 +558,7 @@ func (h *Histo) Combine(other []byte) error {
 		return nil
 	}
 
-	h.tDigest.Merge(val.TDigest)
+	h.tDigest.Merge(tdigest.NewMergingFromData(val.TDigest))
 	h.weight += val.Weight
 	h.min = math.Min(h.min, val.Min)
 	h.max = math.Max(h.max, val.Max)
