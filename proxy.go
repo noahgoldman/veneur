@@ -387,9 +387,17 @@ func (p *Proxy) ProxyTraces(ctx context.Context, traces []DatadogTraceSpan) {
 	}
 }
 
+// errNoDestinations is returned when there are no global Veneurs available
+// for forwarding.
+type errNoDestinations struct{}
+
+func (e errNoDestinations) Error() string {
+	return "there are no available destinations for forwarding"
+}
+
 // ProxyMetrics takes a slice of JSONMetrics and breaks them up into
 // multiple HTTP requests by MetricKey using the hash ring.
-func (p *Proxy) ProxyMetrics(ctx context.Context, jsonMetrics []samplers.JSONMetric, origin string) {
+func (p *Proxy) ProxyMetrics(ctx context.Context, jsonMetrics []samplers.JSONMetric, origin string) error {
 	span, _ := trace.StartSpanFromContext(ctx, "veneur.opentracing.proxy.proxy_metrics")
 	defer span.ClientFinish(p.TraceClient)
 
@@ -409,7 +417,15 @@ func (p *Proxy) ProxyMetrics(ctx context.Context, jsonMetrics []samplers.JSONMet
 	}
 
 	for _, jm := range jsonMetrics {
-		dest, _ := p.ForwardDestinations.Get(jm.MetricKey.String())
+		dest, err := p.ForwardDestinations.Get(jm.MetricKey.String())
+		if err != nil {
+			err = errNoDestinations{}
+			log.WithFields(logrus.Fields{
+				"error": err,
+			}).Errorf("Failed to forward metrics")
+			return err
+		}
+
 		jsonMetricsByDestination[dest] = append(jsonMetricsByDestination[dest], jm)
 	}
 
@@ -423,6 +439,8 @@ func (p *Proxy) ProxyMetrics(ctx context.Context, jsonMetrics []samplers.JSONMet
 	wg.Wait() // Wait for all the above goroutines to complete
 	span.Add(ssf.Timing("proxy.duration_ns", time.Since(span.Start), time.Nanosecond, nil))
 	span.Add(ssf.Count("proxy.proxied_metrics_total", float32(len(jsonMetrics)), nil))
+
+	return nil
 }
 
 func (p *Proxy) doPost(ctx context.Context, wg *sync.WaitGroup, destination string, batch []samplers.JSONMetric) {

@@ -227,3 +227,21 @@ func TestTimeout(t *testing.T) {
 		t.Fatal("Proxy took too long to time out. Is the deadline behavior working?")
 	}
 }
+
+func TestNoForwardDestinations(t *testing.T) {
+	cfg := generateProxyConfig()
+	cfg.ForwardAddress = ""
+
+	server, err := NewProxyFromConfig(logrus.New(), cfg)
+	assert.NoError(t, err, "should've been able to successfully create a proxy")
+	defer server.Shutdown()
+
+	ctr := samplers.Counter{Name: "test", Tags: []string{}}
+	jsonCtr, err := ctr.Export()
+	require.NoError(t, err)
+	metrics := []samplers.JSONMetric{jsonCtr}
+
+	err = server.ProxyMetrics(context.Background(), metrics, "test.host")
+	assert.EqualError(t, err, errNoDestinations{}.Error(),
+		"proxying should return an error that no destinations were found")
+}
