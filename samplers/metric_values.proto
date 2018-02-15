@@ -1,0 +1,17 @@
+syntax = "proto3";
+package samplers;
+
+import "github.com/stripe/veneur/tdigest/tdigest.proto";
+
+// HistogramValue includes fields that should be serialized into the Value
+// field of a JSONMetric.  Typically there shouldn't be any reason to use
+// this type directly, as converting a Histo to a JSONMetric and back should
+// be done with (*Histo).Export and (*Histo).Combine
+message HistogramValue {
+    tdigest.MergingDigestData t_digest = 1;
+    double min = 2;
+    double max = 3;
+    double reciprocalSum = 4;
+    double sum = 5;
+    double weight = 6;
+}
