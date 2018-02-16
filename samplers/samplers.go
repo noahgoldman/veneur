@@ -101,7 +101,8 @@ type JSONMetric struct {
 	Tags []string `json:"tags"`
 	// the Value is an internal representation of the metric's contents, eg a
 	// gob-encoded histogram or hyperloglog.
-	Value []byte `json:"value"`
+	Value []byte      `json:"value"`
+	Scope MetricScope `json:"scope"`
 }
 
 const sinkPrefix string = "veneursinkonly:"
