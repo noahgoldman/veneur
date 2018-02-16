@@ -248,11 +248,15 @@ func (w *Worker) ProcessMetric(m *samplers.UDPMetric) {
 			w.wm.sets[m.MetricKey].Sample(m.Value.(string), m.SampleRate)
 		}
 	case timerTypeName:
-		if m.Scope == samplers.LocalOnly {
-			w.wm.localTimers[m.MetricKey].Sample(m.Value.(float64), m.SampleRate)
-		} else {
-			w.wm.timers[m.MetricKey].Sample(m.Value.(float64), m.SampleRate)
+		ts := w.wm.timers
+		switch m.Scope {
+		case samplers.LocalOnly:
+			ts = w.wm.localTimers
+		case samplers.GlobalOnly:
+			ts = w.wm.globalTimers
 		}
+
+		ts[m.MetricKey].Sample(m.Value.(float64), m.SampleRate)
 	default:
 		log.WithField("type", m.Type).Error("Unknown metric type for processing")
 	}
@@ -296,7 +300,12 @@ func (w *Worker) ImportMetric(other samplers.JSONMetric) {
 			log.WithError(err).Error("Could not merge histograms")
 		}
 	case timerTypeName:
-		if err := w.wm.timers[other.MetricKey].Combine(other.Value); err != nil {
+		ms := w.wm.timers
+		if other.Scope == samplers.GlobalOnly {
+			ms = w.wm.globalTimers
+		}
+
+		if err := ms[other.MetricKey].Combine(other.Value); err != nil {
 			log.WithError(err).Error("Could not merge timers")
 		}
 	default:
