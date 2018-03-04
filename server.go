@@ -113,6 +113,9 @@ type Server struct {
 	metricSinks []sinks.MetricSink
 
 	TraceClient *trace.Client
+
+	// gRPC
+	gRPCForwardAddress string
 }
 
 // SetLogger sets the default logger in veneur to the passed value.
@@ -471,6 +474,8 @@ func NewFromConfig(logger *logrus.Logger, conf Config) (*Server, error) {
 	conf.LightstepAccessToken = REDACTED
 	conf.AwsAccessKeyID = REDACTED
 	conf.AwsSecretAccessKey = REDACTED
+
+	ret.gRPCForwardAddress = conf.GrpcForwardAddress
 
 	logger.WithField("config", conf).Debug("Initialized server")
 

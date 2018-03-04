@@ -17,7 +17,7 @@ import proto "github.com/golang/protobuf/proto"
 import fmt "fmt"
 import math "math"
 
-import encoding_binary "encoding/binary"
+import binary "encoding/binary"
 
 import io "io"
 
@@ -366,7 +366,7 @@ func (m *SSFSample) MarshalTo(dAtA []byte) (int, error) {
 	if m.Value != 0 {
 		dAtA[i] = 0x1d
 		i++
-		encoding_binary.LittleEndian.PutUint32(dAtA[i:], uint32(math.Float32bits(float32(m.Value))))
+		binary.LittleEndian.PutUint32(dAtA[i:], uint32(math.Float32bits(float32(m.Value))))
 		i += 4
 	}
 	if m.Timestamp != 0 {
@@ -388,7 +388,7 @@ func (m *SSFSample) MarshalTo(dAtA []byte) (int, error) {
 	if m.SampleRate != 0 {
 		dAtA[i] = 0x3d
 		i++
-		encoding_binary.LittleEndian.PutUint32(dAtA[i:], uint32(math.Float32bits(float32(m.SampleRate))))
+		binary.LittleEndian.PutUint32(dAtA[i:], uint32(math.Float32bits(float32(m.SampleRate))))
 		i += 4
 	}
 	if len(m.Tags) > 0 {
@@ -726,7 +726,7 @@ func (m *SSFSample) Unmarshal(dAtA []byte) error {
 			if (iNdEx + 4) > l {
 				return io.ErrUnexpectedEOF
 			}
-			v = uint32(encoding_binary.LittleEndian.Uint32(dAtA[iNdEx:]))
+			v = uint32(binary.LittleEndian.Uint32(dAtA[iNdEx:]))
 			iNdEx += 4
 			m.Value = float32(math.Float32frombits(v))
 		case 4:
@@ -804,7 +804,7 @@ func (m *SSFSample) Unmarshal(dAtA []byte) error {
 			if (iNdEx + 4) > l {
 				return io.ErrUnexpectedEOF
 			}
-			v = uint32(encoding_binary.LittleEndian.Uint32(dAtA[iNdEx:]))
+			v = uint32(binary.LittleEndian.Uint32(dAtA[iNdEx:]))
 			iNdEx += 4
 			m.SampleRate = float32(math.Float32frombits(v))
 		case 8:

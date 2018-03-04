@@ -9,12 +9,15 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"github.com/stripe/veneur/forwardrpc"
 	vhttp "github.com/stripe/veneur/http"
 	"github.com/stripe/veneur/samplers"
+	"github.com/stripe/veneur/samplers/metricpb"
 	"github.com/stripe/veneur/sinks"
 	"github.com/stripe/veneur/ssf"
 	"github.com/stripe/veneur/trace"
 	"github.com/stripe/veneur/trace/metrics"
+	"google.golang.org/grpc"
 )
 
 // Flush collects sampler's metrics and passes them to sinks.
@@ -351,8 +354,8 @@ func (s *Server) flushForward(ctx context.Context, wms []WorkerMetrics) {
 			jsonMetrics = append(jsonMetrics, jm)
 		}
 	}
-	span.Add(ssf.Timing("forward.duration_ns", time.Since(exportStart), time.Nanosecond, map[string]string{"part": "export"}),
-		ssf.Gauge("forward.post_metrics_total", float32(len(jsonMetrics)), nil))
+	span.Add(ssf.Timing("forwardrpc.duration_ns", time.Since(exportStart), time.Nanosecond, map[string]string{"part": "export"}),
+		ssf.Gauge("forwardrpc.post_metrics_total", float32(len(jsonMetrics)), nil))
 	if len(jsonMetrics) == 0 {
 		log.Debug("Nothing to forward, skipping.")
 		return
@@ -374,4 +377,96 @@ func (s *Server) flushTraces(ctx context.Context) {
 	for _, w := range s.SpanWorkers {
 		w.Flush()
 	}
+}
+
+func (s *Server) forwardGRPC(ctx context.Context, wms []WorkerMetrics) {
+	span, _ := trace.StartSpanFromContext(ctx, "forward")
+	span.SetTag("protocol", "grpc")
+	defer span.ClientFinish(s.TraceClient)
+
+	bufLen := 0
+	for _, wm := range wms {
+		bufLen += len(wm.histograms) + len(wm.sets) + len(wm.timers) +
+			len(wm.globalCounters) + len(wm.globalGauges)
+	}
+
+	metrics := make([]*metricpb.Metric, 0, bufLen)
+	exportStart := time.Now()
+	for _, wm := range wms {
+		for _, count := range wm.globalCounters {
+			metrics = appendMetric(metrics, count, metricpb.Type_Counter)
+		}
+		for _, gauge := range wm.globalGauges {
+			metrics = appendMetric(metrics, gauge, metricpb.Type_Gauge)
+		}
+		for _, histo := range wm.histograms {
+			metrics = appendMetric(metrics, histo, metricpb.Type_Histogram)
+		}
+		for _, set := range wm.sets {
+			metrics = appendMetric(metrics, set, metricpb.Type_Set)
+		}
+		for _, timer := range wm.timers {
+			metrics = appendMetric(metrics, timer, metricpb.Type_Timer)
+		}
+	}
+	span.Add(
+		ssf.Timing("duration_ns", time.Since(exportStart),
+			time.Nanosecond, map[string]string{"part": "export"}),
+		ssf.Gauge("post_metrics_total", float32(len(metrics)), nil),
+	)
+
+	if len(metrics) == 0 {
+		log.Debug("Nothing to forward, skipping.")
+		return
+	}
+
+	entry := log.WithFields(logrus.Fields{
+		"metrics":     len(metrics),
+		"destination": s.gRPCForwardAddress,
+		"protoco;":    "grpc",
+	})
+
+	conn, err := grpc.Dial(s.gRPCForwardAddress)
+	if err != nil {
+		span.Add(ssf.Count("connection_error", 1, nil))
+		entry.WithError(err).Error("Failed to initialize a GRPC connection")
+		return
+	}
+	defer conn.Close()
+
+	c := forwardrpc.NewForwardClient(conn)
+
+	grpcStart := time.Now()
+	_, err = c.SendMetrics(ctx, &forwardrpc.MetricList{Metrics: metrics})
+	if err != nil {
+		span.Add(ssf.Count("error_total", 1, nil))
+		entry.WithError(err).Error("Failed to forward to an upstream Veneur")
+	} else {
+		entry.Info("Completed forward to an upstream Veneur")
+	}
+
+	span.Add(
+		ssf.Timing("duration_ns", time.Since(grpcStart), time.Nanosecond, map[string]string{"part": "grpc"}),
+		ssf.Count("error_total", 0, nil),
+	)
+}
+
+type metricExporter interface {
+	GetName() string
+	Metric() (*metricpb.Metric, error)
+}
+
+func appendMetric(metrics []*metricpb.Metric, exp metricExporter, mType metricpb.Type) []*metricpb.Metric {
+	m, err := exp.Metric()
+	if err != nil {
+		log.WithFields(logrus.Fields{
+			logrus.ErrorKey: err,
+			"type":          mType,
+			"name":          exp.GetName(),
+		}).Error("Could not export metric")
+		return metrics
+	}
+
+	m.Type = mType
+	return append(metrics, m)
 }

@@ -3,6 +3,7 @@ package veneur
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -14,13 +15,16 @@ import (
 	"time"
 
 	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 
 	"github.com/DataDog/datadog-go/statsd"
 	raven "github.com/getsentry/raven-go"
 	"github.com/hashicorp/consul/api"
 	"github.com/pkg/profile"
 	"github.com/sirupsen/logrus"
+	"github.com/stripe/veneur/forwardrpc"
 	vhttp "github.com/stripe/veneur/http"
+	"github.com/stripe/veneur/proxy/server"
 	"github.com/stripe/veneur/samplers"
 	"github.com/stripe/veneur/ssf"
 	"github.com/stripe/veneur/trace"
@@ -50,10 +54,13 @@ type Proxy struct {
 	AcceptingTraces        bool
 	ForwardTimeout         time.Duration
 
-	usingConsul     bool
-	usingKubernetes bool
-	enableProfiling bool
-	TraceClient     *trace.Client
+	usingConsul       bool
+	usingKubernetes   bool
+	enableProfiling   bool
+	grpcServer        *grpc.Server
+	grpcProxyServer   *proxyserver.Server
+	grpcListenAddress string
+	TraceClient       *trace.Client
 }
 
 func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err error) {
@@ -176,6 +183,18 @@ func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err e
 		}
 	}
 
+	p.grpcListenAddress = conf.GrpcAddress
+	if p.grpcListenAddress != "" {
+		p.grpcProxyServer = proxyserver.New(p.ForwardDestinations, &proxyserver.Options{
+			Log:         logrus.NewEntry(log),
+			Timeout:     p.ForwardTimeout,
+			TraceClient: p.TraceClient,
+		})
+
+		p.grpcServer = grpc.NewServer()
+		forwardrpc.RegisterForwardServer(p.grpcServer, p.grpcProxyServer)
+	}
+
 	// TODO Size of replicas in config?
 	//ret.ForwardDestinations.NumberOfReplicas = ???
 
@@ -254,6 +273,27 @@ func (p *Proxy) Start() {
 	}
 }
 
+func (p *Proxy) Serve() {
+	done := make(chan struct{})
+
+	go func() {
+		p.HTTPServe()
+		done <- struct{}{}
+	}()
+
+	if p.grpcListenAddress != "" {
+		go func() {
+			p.GRPCServe()
+			done <- struct{}{}
+		}()
+	}
+
+	// wait until at least one of the servers has shut down
+	<-done
+	graceful.Shutdown()
+	p.GRPCStop()
+}
+
 // HTTPServe starts the HTTP server and listens perpetually until it encounters an unrecoverable error.
 func (p *Proxy) HTTPServe() {
 	var prf interface {
@@ -297,6 +337,38 @@ func (p *Proxy) HTTPServe() {
 	}
 
 	graceful.Shutdown()
+}
+
+func (p *Proxy) GRPCServe() {
+	lis, err := net.Listen("tcp", p.grpcListenAddress)
+	if err != nil {
+		log.WithError(err).Error("Failed to bind the gRPC server")
+		return
+	}
+
+	log.WithField("address", p.grpcListenAddress).Info("Starting gRPC server")
+	if err := p.grpcServer.Serve(lis); err != nil {
+		log.WithError(err).Error("gRPC server was not shut down cleanly")
+	}
+}
+
+func (p *Proxy) GRPCStop() {
+	if p.grpcServer != nil {
+		done := make(chan struct{})
+		go func() {
+			p.grpcServer.GracefulStop()
+			done <- struct{}{}
+		}()
+
+		select {
+		case <-done:
+			return
+		case <-time.After(10 * time.Second):
+			log.Info("Force-stopping the GRPC server after waiting for a " +
+				"a graceful shutdown")
+			p.grpcServer.Stop()
+		}
+	}
 }
 
 // RefreshDestinations updates the server's list of valid destinations
@@ -458,7 +530,7 @@ func (p *Proxy) doPost(ctx context.Context, wg *sync.WaitGroup, destination stri
 	if err == nil {
 		log.WithField("metrics", batchSize).Info("Completed forward to upstream Veneur")
 	} else {
-		samples.Add(ssf.Count("forward.error_total", 1, map[string]string{"cause": "post"}))
+		samples.Add(ssf.Count("forwardrpc.error_total", 1, map[string]string{"cause": "post"}))
 		log.WithError(err).WithFields(logrus.Fields{
 			"endpoint":  endpoint,
 			"batchSize": batchSize,

@@ -1,0 +1,13 @@
+syntax = "proto3";
+package forwardrpc;
+
+import "github.com/stripe/veneur/samplers/metricpb/metric.proto";
+import "github.com/golang/protobuf/ptypes/empty/empty.proto";
+
+service Forward {
+    rpc SendMetrics(MetricList) returns (google.protobuf.Empty) {}
+}
+
+message MetricList {
+    repeated metricpb.Metric metrics = 1;
+}

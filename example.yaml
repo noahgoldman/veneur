@@ -38,6 +38,9 @@ tls_authority_certificate: ""
 #forward_address: "http://veneur.example.com"
 forward_address: ""
 
+# Set a separate host to forward to over gRPC
+grpc_forward_address: "127.0.0.1:8128"
+
 # How often to flush. When flushing to Datadog, changing this
 # value when you've already emitted metrics will break your time
 # series data.

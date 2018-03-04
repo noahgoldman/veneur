@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stripe/veneur/samplers/metricpb"
 	"github.com/stripe/veneur/ssf"
 )
 
@@ -40,6 +41,14 @@ type MetricKey struct {
 	Name       string `json:"name"`
 	Type       string `json:"type"`
 	JoinedTags string `json:"tagstring"` // tags in deterministic order, joined with commas
+}
+
+func NewMetricKeyFromMetric(m *metricpb.Metric) *MetricKey {
+	return &MetricKey{
+		Name:       m.Name,
+		Type:       m.Type.String(),
+		JoinedTags: strings.Join(m.Tags, ","),
+	}
 }
 
 // ToString returns a string representation of this MetricKey

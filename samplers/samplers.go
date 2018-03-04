@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/axiomhq/hyperloglog"
+	"github.com/stripe/veneur/samplers/metricpb"
 	"github.com/stripe/veneur/tdigest"
 )
 
@@ -128,6 +129,10 @@ type Counter struct {
 	value int64
 }
 
+func (c *Counter) GetName() string {
+	return c.Name
+}
+
 // Sample adds a sample to the counter.
 func (c *Counter) Sample(sample float64, sampleRate float32) {
 	c.value += int64(sample) * int64(1/sampleRate)
@@ -180,6 +185,19 @@ func (c *Counter) Combine(other []byte) error {
 	c.value += otherCounts
 
 	return nil
+}
+
+func (c *Counter) Metric() (*metricpb.Metric, error) {
+	return &metricpb.Metric{
+		Name:  c.Name,
+		Tags:  c.Tags,
+		Type:  metricpb.Type_Counter,
+		Value: &metricpb.Metric_Counter{&metricpb.CounterValue{Value: c.value}},
+	}, nil
+}
+
+func (c *Counter) Merge(v *metricpb.CounterValue) {
+	c.value += v.Value
 }
 
 // NewCounter generates and returns a new Counter.
@@ -246,6 +264,23 @@ func (g *Gauge) Combine(other []byte) error {
 	g.value = otherValue
 
 	return nil
+}
+
+func (g *Gauge) GetName() string {
+	return g.Name
+}
+
+func (g *Gauge) Metric() (*metricpb.Metric, error) {
+	return &metricpb.Metric{
+		Name:  g.Name,
+		Tags:  g.Tags,
+		Type:  metricpb.Type_Gauge,
+		Value: &metricpb.Metric_Gauge{&metricpb.GaugeValue{Value: 1}},
+	}, nil
+}
+
+func (g *Gauge) Merge(v *metricpb.GaugeValue) {
+	g.value = v.Value
 }
 
 // NewGauge genearaaaa who am I kidding just getting rid of the warning.
@@ -322,6 +357,24 @@ func (s *Set) Combine(other []byte) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Set) GetName() string {
+	return s.Name
+}
+
+func (s *Set) Metric() (*metricpb.Metric, error) {
+	encoded, err := s.Hll.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode the HyperLogLog: %v", err)
+	}
+
+	return &metricpb.Metric{
+		Name:  s.Name,
+		Tags:  s.Tags,
+		Type:  metricpb.Type_Set,
+		Value: &metricpb.Metric_Set{&metricpb.SetValue{HyperLogLog: encoded}},
+	}, nil
 }
 
 // Histo is a collection of values that generates max, min, count, and
@@ -523,4 +576,19 @@ func (h *Histo) Combine(other []byte) error {
 	}
 	h.Value.Merge(otherHistogram)
 	return nil
+}
+
+func (h *Histo) GetName() string {
+	return h.Name
+}
+
+func (h *Histo) Metric() (*metricpb.Metric, error) {
+	return &metricpb.Metric{
+		Name: h.Name,
+		Tags: h.Tags,
+		Type: metricpb.Type_Histogram,
+		Value: &metricpb.Metric_Histogram{&metricpb.HistogramValue{
+			TDigest: h.Value.Data(),
+		}},
+	}, nil
 }

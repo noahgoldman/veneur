@@ -1,0 +1,45 @@
+syntax = "proto3";
+package metricpb;
+
+import "github.com/stripe/veneur/tdigest/tdigest.proto";
+
+message Metric {
+    string name = 1;
+    repeated string tags = 2;
+    Type type = 3;
+
+    oneof value {
+        CounterValue counter = 5;
+        GaugeValue gauge = 6;
+        HistogramValue histogram = 7;
+        SetValue set = 8;
+    }
+}
+
+enum Type {
+    Counter = 0;
+    Gauge = 1;
+    Histogram = 2;
+    Set = 3;
+    Timer = 4;
+}
+
+message CounterValue {
+    int64 value = 1;
+}
+
+message GaugeValue {
+    double value = 1;
+}
+
+// HistogramValue includes fields that should be serialized into the Value
+// field of a JSONMetric.  Typically there shouldn't be any reason to use
+// this type directly, as converting a Histo to a JSONMetric and back should
+// be done with (*Histo).Export and (*Histo).Combine
+message HistogramValue {
+    tdigest.MergingDigestData t_digest = 1;
+}
+
+message SetValue {
+    bytes hyper_log_log = 1;
+}
