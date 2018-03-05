@@ -3,73 +3,31 @@ package proxyserver
 import (
 	"context"
 	"math/rand"
-	"net"
 	"strconv"
-	"sync"
 	"testing"
 
-	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/stretchr/testify/assert"
 	"github.com/stripe/veneur/forwardrpc"
+	"github.com/stripe/veneur/forwardrpc/forwardtest"
 	"github.com/stripe/veneur/samplers/metricpb"
-	"google.golang.org/grpc"
 	"stathat.com/c/consistent"
 )
 
-type testForwardServer struct {
-	mtx     *sync.Mutex
-	metrics []*metricpb.Metric
-	lis     net.Listener
-	server  *grpc.Server
-}
-
-func newTestForwardServer() *testForwardServer {
-	return &testForwardServer{
-		mtx: &sync.Mutex{},
-	}
-}
-
-func (s *testForwardServer) start(t *testing.T) {
-	var err error
-	s.lis, err = net.Listen("tcp", "127.0.0.1:")
-	if err != nil {
-		t.Fatalf("failed to create a TCP connection for a test GRPC "+
-			"server: %v", err)
-	}
-
-	s.server = grpc.NewServer()
-	forwardrpc.RegisterForwardServer(s.server, s)
-	go func() {
-		s.server.Serve(s.lis)
-	}()
-}
-
-func (s *testForwardServer) stop() {
-	s.server.Stop()
-}
-
-func (s *testForwardServer) SendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) (*empty.Empty, error) {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	s.metrics = append(s.metrics, mlist.Metrics...)
-	return &empty.Empty{}, nil
-}
-
-func createTestForwardServers(t *testing.T, n int) []*testForwardServer {
+func createTestForwardServers(t *testing.T, n int) []*forwardtest.Server {
 	t.Helper()
 
-	res := make([]*testForwardServer, n)
+	res := make([]*forwardtest.Server, n)
 	for i := range res {
-		res[i] = newTestForwardServer()
-		res[i].start(t)
+		res[i] = forwardtest.NewServer()
+		res[i].Start(t)
 	}
 
 	return res
 }
 
-func stopTestForwardServers(ss []*testForwardServer) {
+func stopTestForwardServers(ss []*forwardtest.Server) {
 	for _, s := range ss {
-		s.stop()
+		s.Stop()
 	}
 }
 
@@ -99,7 +57,7 @@ func TestManyDestinations(t *testing.T) {
 
 		ring := consistent.New()
 		for _, dest := range dests {
-			ring.Add(dest.lis.Addr().String())
+			ring.Add(dest.Addr().String())
 		}
 
 		expected := makeForwardMetrics(100)
@@ -111,9 +69,9 @@ func TestManyDestinations(t *testing.T) {
 		// Get all of the metrics from the destination servers
 		var actual []*metricpb.Metric
 		for _, dest := range dests {
-			assert.NotEmpty(t, dest.metrics, "The server at '%s' got zero metrics. "+
-				"The chunking logic may be incorrect", dest.lis.Addr().String())
-			actual = append(actual, dest.metrics...)
+			assert.NotEmpty(t, dest.Metrics(), "The server at '%s' got zero metrics. "+
+				"The chunking logic may be incorrect", dest.Addr().String())
+			actual = append(actual, dest.Metrics()...)
 		}
 
 		assert.ElementsMatch(t, expected, actual)
@@ -146,7 +104,7 @@ func TestTimeout(t *testing.T) {
 
 	ring := consistent.New()
 	for _, dest := range dests {
-		ring.Add(dest.lis.Addr().String())
+		ring.Add(dest.Addr().String())
 	}
 
 	server := New(ring, &Options{Timeout: 1})

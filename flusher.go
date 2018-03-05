@@ -384,31 +384,8 @@ func (s *Server) forwardGRPC(ctx context.Context, wms []WorkerMetrics) {
 	span.SetTag("protocol", "grpc")
 	defer span.ClientFinish(s.TraceClient)
 
-	bufLen := 0
-	for _, wm := range wms {
-		bufLen += len(wm.histograms) + len(wm.sets) + len(wm.timers) +
-			len(wm.globalCounters) + len(wm.globalGauges)
-	}
-
-	metrics := make([]*metricpb.Metric, 0, bufLen)
 	exportStart := time.Now()
-	for _, wm := range wms {
-		for _, count := range wm.globalCounters {
-			metrics = appendMetric(metrics, count, metricpb.Type_Counter)
-		}
-		for _, gauge := range wm.globalGauges {
-			metrics = appendMetric(metrics, gauge, metricpb.Type_Gauge)
-		}
-		for _, histo := range wm.histograms {
-			metrics = appendMetric(metrics, histo, metricpb.Type_Histogram)
-		}
-		for _, set := range wm.sets {
-			metrics = appendMetric(metrics, set, metricpb.Type_Set)
-		}
-		for _, timer := range wm.timers {
-			metrics = appendMetric(metrics, timer, metricpb.Type_Timer)
-		}
-	}
+	metrics := s.exportForwardMetrics(wms)
 	span.Add(
 		ssf.Timing("duration_ns", time.Since(exportStart),
 			time.Nanosecond, map[string]string{"part": "export"}),
@@ -422,11 +399,11 @@ func (s *Server) forwardGRPC(ctx context.Context, wms []WorkerMetrics) {
 
 	entry := log.WithFields(logrus.Fields{
 		"metrics":     len(metrics),
-		"destination": s.gRPCForwardAddress,
+		"destination": s.grpcForwardAddress,
 		"protoco;":    "grpc",
 	})
 
-	conn, err := grpc.Dial(s.gRPCForwardAddress)
+	conn, err := grpc.Dial(s.grpcForwardAddress)
 	if err != nil {
 		span.Add(ssf.Count("connection_error", 1, nil))
 		entry.WithError(err).Error("Failed to initialize a GRPC connection")
@@ -449,6 +426,35 @@ func (s *Server) forwardGRPC(ctx context.Context, wms []WorkerMetrics) {
 		ssf.Timing("duration_ns", time.Since(grpcStart), time.Nanosecond, map[string]string{"part": "grpc"}),
 		ssf.Count("error_total", 0, nil),
 	)
+}
+
+func (s *Server) exportForwardMetrics(wms []WorkerMetrics) []*metricpb.Metric {
+	bufLen := 0
+	for _, wm := range wms {
+		bufLen += len(wm.histograms) + len(wm.sets) + len(wm.timers) +
+			len(wm.globalCounters) + len(wm.globalGauges)
+	}
+
+	metrics := make([]*metricpb.Metric, 0, bufLen)
+	for _, wm := range wms {
+		for _, count := range wm.globalCounters {
+			metrics = appendMetric(metrics, count, metricpb.Type_Counter)
+		}
+		for _, gauge := range wm.globalGauges {
+			metrics = appendMetric(metrics, gauge, metricpb.Type_Gauge)
+		}
+		for _, histo := range wm.histograms {
+			metrics = appendMetric(metrics, histo, metricpb.Type_Histogram)
+		}
+		for _, set := range wm.sets {
+			metrics = appendMetric(metrics, set, metricpb.Type_Set)
+		}
+		for _, timer := range wm.timers {
+			metrics = appendMetric(metrics, timer, metricpb.Type_Timer)
+		}
+	}
+
+	return metrics
 }
 
 type metricExporter interface {

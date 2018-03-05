@@ -59,6 +59,9 @@ stats_address: "localhost:8126"
 # http_address: "einhorn@0"
 http_address: "0.0.0.0:8127"
 
+# The address to listen on for gRPC imports
+grpc_address: "0.0.0.0:8128"
+
 # The name of timer metrics that "indicator" spans should be tracked
 # under. If this is unset, veneur doesn't report an additional timer
 # metric for indicator spans.

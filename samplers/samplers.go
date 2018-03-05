@@ -377,6 +377,10 @@ func (s *Set) Metric() (*metricpb.Metric, error) {
 	}, nil
 }
 
+func (s *Set) Merge(v *metricpb.SetValue) error {
+	return s.Combine(v.HyperLogLog)
+}
+
 // Histo is a collection of values that generates max, min, count, and
 // percentiles over time.
 type Histo struct {
@@ -591,4 +595,10 @@ func (h *Histo) Metric() (*metricpb.Metric, error) {
 			TDigest: h.Value.Data(),
 		}},
 	}, nil
+}
+
+func (h *Histo) Merge(v *metricpb.HistogramValue) {
+	if v.TDigest != nil {
+		h.Value.Merge(tdigest.NewMergingFromData(v.TDigest))
+	}
 }

@@ -1,6 +1,7 @@
 package veneur
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/stripe/veneur/protocol"
 	"github.com/stripe/veneur/samplers"
+	"github.com/stripe/veneur/samplers/metricpb"
 	"github.com/stripe/veneur/sinks"
 	"github.com/stripe/veneur/ssf"
 	"github.com/stripe/veneur/trace"
@@ -22,16 +24,17 @@ const timerTypeName = "timer"
 
 // Worker is the doodad that does work.
 type Worker struct {
-	id          int
-	PacketChan  chan samplers.UDPMetric
-	ImportChan  chan []samplers.JSONMetric
-	QuitChan    chan struct{}
-	processed   int64
-	imported    int64
-	mutex       *sync.Mutex
-	traceClient *trace.Client
-	logger      *logrus.Logger
-	wm          WorkerMetrics
+	id               int
+	PacketChan       chan samplers.UDPMetric
+	ImportChan       chan []samplers.JSONMetric
+	ImportMetricChan chan *metricpb.Metric
+	QuitChan         chan struct{}
+	processed        int64
+	imported         int64
+	mutex            *sync.Mutex
+	traceClient      *trace.Client
+	logger           *logrus.Logger
+	wm               WorkerMetrics
 }
 
 // IngestUDP on a Worker feeds the metric into the worker's PacketChan.
@@ -166,6 +169,8 @@ func (w *Worker) Work() {
 			for _, j := range m {
 				w.ImportMetric(j)
 			}
+		case m := <-w.ImportMetricChan:
+			w.ImportGRPCMetric(m)
 		case <-w.QuitChan:
 			// We have been asked to stop.
 			log.WithField("worker", w.id).Error("Stopping")
@@ -267,6 +272,56 @@ func (w *Worker) ImportMetric(other samplers.JSONMetric) {
 	default:
 		log.WithField("type", other.Type).Error("Unknown metric type for importing")
 	}
+}
+
+// ImportMetric receives a metric from another veneur instance
+func (w *Worker) ImportGRPCMetric(other *metricpb.Metric) (err error) {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+
+	key := samplers.NewMetricKeyFromMetric(other)
+
+	// we don't increment the processed metric counter here, it was already
+	// counted by the original veneur that sent this to us
+	w.imported++
+	if other.Type == metricpb.Type_Counter || other.Type == metricpb.Type_Gauge {
+		// this is an odd special case -- counters that are imported are global
+		w.wm.Upsert(key, samplers.GlobalOnly, other.Tags)
+	} else {
+		w.wm.Upsert(key, samplers.MixedScope, other.Tags)
+	}
+
+	switch v := other.GetValue().(type) {
+	case *metricpb.Metric_Counter:
+		w.wm.globalCounters[key].Merge(v.Counter)
+	case *metricpb.Metric_Gauge:
+		w.wm.globalGauges[key].Merge(v.Gauge)
+	case *metricpb.Metric_Set:
+		if err := w.wm.sets[key].Merge(v.Set); err != nil {
+			log.WithError(err).Error("Could not merge sets")
+		}
+	case *metricpb.Metric_Histogram:
+		switch other.Type {
+		case metricpb.Type_Histogram:
+			w.wm.histograms[key].Merge(v.Histogram)
+		case metricpb.Type_Timer:
+			w.wm.timers[key].Merge(v.Histogram)
+		}
+	case nil:
+		err = fmt.Errorf("Can't import a metric with a nil value")
+	default:
+		err = fmt.Errorf("Unknown metric type for importing")
+	}
+
+	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"type":     other.Type,
+			"name":     other.Name,
+			"protocol": "grpc",
+		}).Error("Failed to import a metric")
+	}
+
+	return err
 }
 
 // Flush resets the worker's internal metrics and returns their contents.

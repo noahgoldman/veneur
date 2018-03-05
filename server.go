@@ -27,9 +27,11 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/zenazn/goji/bind"
 	"github.com/zenazn/goji/graceful"
+	"google.golang.org/grpc"
 
 	"github.com/pkg/profile"
 
+	"github.com/stripe/veneur/forwardrpc"
 	"github.com/stripe/veneur/plugins"
 	localfilep "github.com/stripe/veneur/plugins/localfile"
 	s3p "github.com/stripe/veneur/plugins/s3"
@@ -114,8 +116,10 @@ type Server struct {
 
 	TraceClient *trace.Client
 
-	// gRPC
-	gRPCForwardAddress string
+	// grpc
+	grpcForwardAddress string
+	grpcListenAddress  string
+	grpcServer         *grpc.Server
 }
 
 // SetLogger sets the default logger in veneur to the passed value.
@@ -475,7 +479,13 @@ func NewFromConfig(logger *logrus.Logger, conf Config) (*Server, error) {
 	conf.AwsAccessKeyID = REDACTED
 	conf.AwsSecretAccessKey = REDACTED
 
-	ret.gRPCForwardAddress = conf.GrpcForwardAddress
+	// Setup the grpc server if it was configured
+	if conf.GrpcAddress != "" {
+		ret.grpcForwardAddress = conf.GrpcForwardAddress
+		ret.grpcListenAddress = conf.GrpcAddress
+		ret.grpcServer = grpc.NewServer()
+		forwardrpc.RegisterForwardServer(ret.grpcServer, ret)
+	}
 
 	logger.WithField("config", conf).Debug("Initialized server")
 
@@ -888,6 +898,29 @@ func (s *Server) ReadTCPSocket(listener net.Listener) {
 	}
 }
 
+func (s *Server) Serve() {
+	done := make(chan struct{})
+
+	if s.HTTPAddr != "" {
+		go func() {
+			s.HTTPServe()
+			done <- struct{}{}
+		}()
+	}
+
+	if s.grpcListenAddress != "" {
+		go func() {
+			s.GRPCServe()
+			done <- struct{}{}
+		}()
+	}
+
+	// wait until at least one of the servers has shut down
+	<-done
+	graceful.Shutdown()
+	s.GRPCStop()
+}
+
 // HTTPServe starts the HTTP server and listens perpetually until it encounters an unrecoverable error.
 func (s *Server) HTTPServe() {
 	var prf interface {
@@ -931,6 +964,39 @@ func (s *Server) HTTPServe() {
 	}
 
 	graceful.Shutdown()
+}
+
+func (s *Server) GRPCServe() {
+	lis, err := net.Listen("tcp", s.grpcListenAddress)
+	if err != nil {
+		log.WithError(err).Error("Failed to bind the grpc server")
+		return
+	}
+	defer lis.Close()
+
+	log.WithField("address", s.grpcListenAddress).Info("Starting grpc server")
+	if err := s.grpcServer.Serve(lis); err != nil {
+		log.WithError(err).Error("grpc server was not shut down cleanly")
+	}
+}
+
+func (s *Server) GRPCStop() {
+	if s.grpcServer != nil {
+		done := make(chan struct{})
+		go func() {
+			s.grpcServer.GracefulStop()
+			done <- struct{}{}
+		}()
+
+		select {
+		case <-done:
+			return
+		case <-time.After(10 * time.Second):
+			log.Info("Force-stopping the GRPC server after waiting for a " +
+				"a graceful shutdown")
+			s.grpcServer.Stop()
+		}
+	}
 }
 
 // Shutdown signals the server to shut down after closing all
