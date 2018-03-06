@@ -93,6 +93,7 @@ func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err e
 
 	p.ConsulForwardService = conf.ConsulForwardServiceName
 	p.ConsulTraceService = conf.ConsulTraceServiceName
+	p.ConsulForwardGRPCService = conf.ConsulForwardGrpcServiceName
 
 	if p.ConsulForwardService != "" || conf.ForwardAddress != "" {
 		p.AcceptingForwards = true
