@@ -1,3 +1,9 @@
+// Package proxysrv proxies metrics over gRPC to global Veneur's using
+// consistent hashing
+//
+// The Server provided accepts a hash ring of destinations, and then listens
+// for metrics over gRPC.  It hashes each metric to a specific destination,
+// and forwards each metric to its appropriate destination Veneur.
 package proxysrv
 
 import (
@@ -21,12 +27,16 @@ import (
 	"stathat.com/c/consistent"
 )
 
+// Server is a gRPC server that implements the forwardrpc.Forward service.
+// It receives metrics and forwards them consistently to a destination, based
+// on the metric name, type and tags.
 type Server struct {
 	*grpc.Server
 	destinations *consistent.Consistent
 	opts         *options
 }
 
+// Option modifies an internal options type.
 type Option func(*options)
 
 type options struct {
@@ -35,6 +45,8 @@ type options struct {
 	traceClient    *trace.Client
 }
 
+// New creates a new Server with the provided destinations. The server returned
+// is unstarted.
 func New(destinations *consistent.Consistent, opts ...Option) *Server {
 	res := &Server{
 		Server:       grpc.NewServer(),
@@ -57,6 +69,9 @@ func New(destinations *consistent.Consistent, opts ...Option) *Server {
 	return res
 }
 
+// Serve starts a gRPC listener on the specified address and blocks while
+// listening for requests. If listening is iterrupted by some means other than
+// Stop or GracefulStop being called, it returns a non-nil error.
 func (s *Server) Serve(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -67,8 +82,12 @@ func (s *Server) Serve(addr string) error {
 	return s.Server.Serve(ln)
 }
 
+// SendMetrics spawns a new goroutine that forwards metrics to the destinations
+// and exist immediately.
 func (s *Server) SendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) (*empty.Empty, error) {
-	go s.sendMetrics(context.Background(), mlist)
+	go func() {
+		_ = s.sendMetrics(context.Background(), mlist)
+	}()
 	return &empty.Empty{}, nil
 }
 
@@ -128,6 +147,9 @@ func (s *Server) sendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) 
 	return res
 }
 
+// recordError records when an error has resulted in some metrics not being
+// forwarded.  It submits diagnostic metrics, logs an error, and then returns
+// a wrapped error.
 func (s *Server) recordError(
 	span *trace.Span,
 	err error,
@@ -148,6 +170,7 @@ func (s *Server) recordError(
 	return fmt.Errorf("%s: %v", message, err)
 }
 
+// destForMetric returns a destination for the input metric.
 func (s *Server) destForMetric(m *metricpb.Metric) (string, error) {
 	key := samplers.NewMetricKeyFromMetric(m)
 	dest, err := s.destinations.Get(key.String())
@@ -159,12 +182,18 @@ func (s *Server) destForMetric(m *metricpb.Metric) (string, error) {
 	return dest, nil
 }
 
-func (s *Server) forward(ctx context.Context, dest string, metrics []*metricpb.Metric) error {
+// forward sends a set of metrics to the destination address, and returns
+// an error if necessary.
+func (s *Server) forward(ctx context.Context, dest string, metrics []*metricpb.Metric) (err error) {
 	conn, err := grpc.Dial(dest, grpc.WithInsecure())
 	if err != nil {
 		return fmt.Errorf("failed to create a gRPC connection: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if cerr := conn.Close(); err == nil && cerr != nil {
+			err = cerr
+		}
+	}()
 
 	c := forwardrpc.NewForwardClient(conn)
 	_, err = c.SendMetrics(ctx, &forwardrpc.MetricList{Metrics: metrics})
