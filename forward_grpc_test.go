@@ -124,6 +124,15 @@ func forwardGRPCTestMetrics() []*samplers.UDPMetric {
 			SampleRate: 1.0,
 			Scope:      samplers.GlobalOnly,
 		},
+		&samplers.UDPMetric{
+			MetricKey: samplers.MetricKey{
+				Name: testGRPCMetric("set"),
+				Type: setTypeName,
+			},
+			Value:      "test",
+			SampleRate: 1.0,
+			Scope:      samplers.GlobalOnly,
+		},
 		// Only global metrics should be forwarded
 		&samplers.UDPMetric{
 			MetricKey: samplers.MetricKey{
@@ -152,7 +161,6 @@ func TestE2EForwardingGRPCMetrics(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		metrics := <-ch
-		assert.Equal(t, 8, len(metrics), "metrics:\n%#v", metrics)
 
 		expectedNames := []string{
 			testGRPCMetric("histogram.50percentile"),
@@ -163,6 +171,7 @@ func TestE2EForwardingGRPCMetrics(t *testing.T) {
 			testGRPCMetric("timer.99percentile"),
 			testGRPCMetric("counter"),
 			testGRPCMetric("gauge"),
+			testGRPCMetric("set"),
 		}
 
 		actualNames := make([]string, len(metrics))
@@ -170,8 +179,8 @@ func TestE2EForwardingGRPCMetrics(t *testing.T) {
 			actualNames[i] = metric.Name
 		}
 
-		assert.ElementsMatch(t, expectedNames, actualNames, "The global "+
-			"Veneur didn't flush the right metrics")
+		assert.ElementsMatch(t, expectedNames, actualNames,
+			"The global Veneur didn't flush the right metrics")
 		close(done)
 	}()
 	ff.local.Flush(context.TODO())

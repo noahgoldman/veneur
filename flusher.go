@@ -358,8 +358,8 @@ func (s *Server) flushForward(ctx context.Context, wms []WorkerMetrics) {
 			jsonMetrics = append(jsonMetrics, jm)
 		}
 	}
-	span.Add(ssf.Timing("forwardrpc.duration_ns", time.Since(exportStart), time.Nanosecond, map[string]string{"part": "export"}),
-		ssf.Gauge("forwardrpc.post_metrics_total", float32(len(jsonMetrics)), nil))
+	span.Add(ssf.Timing("forward.duration_ns", time.Since(exportStart), time.Nanosecond, map[string]string{"part": "export"}),
+		ssf.Gauge("forward.post_metrics_total", float32(len(jsonMetrics)), nil))
 	if len(jsonMetrics) == 0 {
 		log.Debug("Nothing to forward, skipping.")
 		return

@@ -13,12 +13,12 @@ import (
 	"stathat.com/c/consistent"
 )
 
-func createTestForwardServers(t *testing.T, n int) []*forwardtest.Server {
+func createTestForwardServers(t *testing.T, n int, handler forwardtest.SendMetricHandler) []*forwardtest.Server {
 	t.Helper()
 
 	res := make([]*forwardtest.Server, n)
 	for i := range res {
-		res[i] = forwardtest.NewServer()
+		res[i] = forwardtest.NewServer(handler)
 		res[i].Start(t)
 	}
 
@@ -52,7 +52,11 @@ func makeForwardMetrics(n int) []*metricpb.Metric {
 func TestManyDestinations(t *testing.T) {
 	// Test with many different numbers of forwarding destinations
 	for numDests := 1; numDests < 10; numDests++ {
-		dests := createTestForwardServers(t, numDests)
+		var actual []*metricpb.Metric
+
+		dests := createTestForwardServers(t, numDests, func(ms []*metricpb.Metric) {
+			actual = append(actual, ms...)
+		})
 		defer stopTestForwardServers(dests)
 
 		ring := consistent.New()
@@ -65,14 +69,6 @@ func TestManyDestinations(t *testing.T) {
 		server := New(ring, nil)
 		err := server.sendMetrics(context.Background(), &forwardrpc.MetricList{expected})
 		assert.NoError(t, err, "sendMetrics shouldn't have failed")
-
-		// Get all of the metrics from the destination servers
-		var actual []*metricpb.Metric
-		for _, dest := range dests {
-			assert.NotEmpty(t, dest.Metrics(), "The server at '%s' got zero metrics. "+
-				"The chunking logic may be incorrect", dest.Addr().String())
-			actual = append(actual, dest.Metrics()...)
-		}
 
 		assert.ElementsMatch(t, expected, actual)
 	}
@@ -99,7 +95,7 @@ func TestUnreachableDestinations(t *testing.T) {
 }
 
 func TestTimeout(t *testing.T) {
-	dests := createTestForwardServers(t, 3)
+	dests := createTestForwardServers(t, 3, nil)
 	defer stopTestForwardServers(dests)
 
 	ring := consistent.New()

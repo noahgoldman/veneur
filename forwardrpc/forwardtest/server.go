@@ -3,7 +3,6 @@ package forwardtest
 import (
 	"context"
 	"net"
-	"sync"
 	"testing"
 
 	"github.com/golang/protobuf/ptypes/empty"
@@ -12,16 +11,17 @@ import (
 	"google.golang.org/grpc"
 )
 
+type SendMetricHandler func([]*metricpb.Metric)
+
 type Server struct {
-	metrics []*metricpb.Metric
-	mtx     *sync.Mutex
 	lis     net.Listener
 	server  *grpc.Server
+	handler SendMetricHandler
 }
 
-func NewServer() *Server {
+func NewServer(handler SendMetricHandler) *Server {
 	return &Server{
-		mtx: &sync.Mutex{},
+		handler: handler,
 	}
 }
 
@@ -48,15 +48,7 @@ func (s *Server) Addr() net.Addr {
 	return s.lis.Addr()
 }
 
-func (s *Server) Metrics() []*metricpb.Metric {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	return append([]*metricpb.Metric{}, s.metrics...)
-}
-
 func (s *Server) SendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) (*empty.Empty, error) {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	s.metrics = append(s.metrics, mlist.Metrics...)
+	s.handler(mlist.Metrics)
 	return &empty.Empty{}, nil
 }
