@@ -1,6 +1,7 @@
 package veneur
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -85,6 +86,7 @@ func NewWorkerMetrics() WorkerMetrics {
 // Returns true if the metric entry was created and false otherwise.
 func (wm WorkerMetrics) Upsert(mk samplers.MetricKey, Scope samplers.MetricScope, tags []string) bool {
 	present := false
+	log.WithField("type", mk.Type).WithField("name", mk.Name).Info("Upserting")
 	switch mk.Type {
 	case counterTypeName:
 		if Scope == samplers.GlobalOnly {
@@ -145,16 +147,17 @@ func (wm WorkerMetrics) Upsert(mk samplers.MetricKey, Scope samplers.MetricScope
 // NewWorker creates, and returns a new Worker object.
 func NewWorker(id int, cl *trace.Client, logger *logrus.Logger) *Worker {
 	return &Worker{
-		id:          id,
-		PacketChan:  make(chan samplers.UDPMetric),
-		ImportChan:  make(chan []samplers.JSONMetric),
-		QuitChan:    make(chan struct{}),
-		processed:   0,
-		imported:    0,
-		mutex:       &sync.Mutex{},
-		traceClient: cl,
-		logger:      logger,
-		wm:          NewWorkerMetrics(),
+		id:               id,
+		PacketChan:       make(chan samplers.UDPMetric),
+		ImportChan:       make(chan []samplers.JSONMetric),
+		ImportMetricChan: make(chan *metricpb.Metric),
+		QuitChan:         make(chan struct{}),
+		processed:        0,
+		imported:         0,
+		mutex:            &sync.Mutex{},
+		traceClient:      cl,
+		logger:           logger,
+		wm:               NewWorkerMetrics(),
 	}
 }
 
@@ -283,13 +286,13 @@ func (w *Worker) ImportGRPCMetric(other *metricpb.Metric) (err error) {
 
 	// we don't increment the processed metric counter here, it was already
 	// counted by the original veneur that sent this to us
-	w.imported++
+	scope := samplers.MixedScope
 	if other.Type == metricpb.Type_Counter || other.Type == metricpb.Type_Gauge {
-		// this is an odd special case -- counters that are imported are global
-		w.wm.Upsert(key, samplers.GlobalOnly, other.Tags)
-	} else {
-		w.wm.Upsert(key, samplers.MixedScope, other.Tags)
+		scope = samplers.GlobalOnly
 	}
+
+	w.wm.Upsert(key, scope, other.Tags)
+	w.imported++
 
 	switch v := other.GetValue().(type) {
 	case *metricpb.Metric_Counter:
@@ -297,8 +300,8 @@ func (w *Worker) ImportGRPCMetric(other *metricpb.Metric) (err error) {
 	case *metricpb.Metric_Gauge:
 		w.wm.globalGauges[key].Merge(v.Gauge)
 	case *metricpb.Metric_Set:
-		if err := w.wm.sets[key].Merge(v.Set); err != nil {
-			log.WithError(err).Error("Could not merge sets")
+		if merr := w.wm.sets[key].Merge(v.Set); merr != nil {
+			err = fmt.Errorf("could not merge a set: %v", err)
 		}
 	case *metricpb.Metric_Histogram:
 		switch other.Type {
@@ -308,9 +311,9 @@ func (w *Worker) ImportGRPCMetric(other *metricpb.Metric) (err error) {
 			w.wm.timers[key].Merge(v.Histogram)
 		}
 	case nil:
-		err = fmt.Errorf("Can't import a metric with a nil value")
+		err = errors.New("Can't import a metric with a nil value")
 	default:
-		err = fmt.Errorf("Unknown metric type for importing")
+		err = errors.New("Unknown metric type for importing")
 	}
 
 	if err != nil {

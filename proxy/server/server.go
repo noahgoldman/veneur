@@ -52,8 +52,8 @@ func New(destinations *consistent.Consistent, opts *Options) *Server {
 }
 
 func (s *Server) SendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) (*empty.Empty, error) {
-	go s.sendMetrics(ctx, mlist)
-	return nil, nil
+	go s.sendMetrics(context.Background(), mlist)
+	return &empty.Empty{}, nil
 }
 
 func (s *Server) sendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) (res error) {
@@ -61,6 +61,7 @@ func (s *Server) sendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) 
 	defer span.ClientFinish(s.opts.TraceClient)
 
 	if s.opts.Timeout > 0 {
+		s.opts.Log.WithField("timeout", s.opts.Timeout).Info("Setting timeout")
 		var cancel func()
 		ctx, cancel = context.WithTimeout(ctx, s.opts.Timeout)
 		defer cancel()

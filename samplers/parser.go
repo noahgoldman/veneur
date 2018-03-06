@@ -46,7 +46,7 @@ type MetricKey struct {
 func NewMetricKeyFromMetric(m *metricpb.Metric) MetricKey {
 	return MetricKey{
 		Name:       m.Name,
-		Type:       m.Type.String(),
+		Type:       strings.ToLower(m.Type.String()),
 		JoinedTags: strings.Join(m.Tags, ","),
 	}
 }

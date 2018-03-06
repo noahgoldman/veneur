@@ -18,7 +18,13 @@ ssf_destination_address: "udp://localhost:8126"
 # Use a static host for forwarding
 forward_address: "http://veneur.example.com"
 # Or use a consul service for consistent forwarding.
-# consul_forward_service_name: "forwardServiceName"
+consul_forward_service_name: "forwardServiceName"
+
+### gRPC forwarding
+# Use a static host for forwarding
+grpc_forward_address: "http://veneur-grpc.example.com"
+# Or use a consul service for consistent forwarding.
+grpc_consul_forward_service_name: "grpcForwardServiceName"
 
 # Maximum time that forwarding each batch of metrics can take;
 # note that forwarding to multiple global veneur servers happens in

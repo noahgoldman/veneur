@@ -38,29 +38,36 @@ import (
 )
 
 type Proxy struct {
-	Sentry                 *raven.Client
-	Hostname               string
-	ForwardDestinations    *consistent.Consistent
-	TraceDestinations      *consistent.Consistent
-	Discoverer             Discoverer
-	ConsulForwardService   string
-	ConsulTraceService     string
-	ConsulInterval         time.Duration
-	ForwardDestinationsMtx sync.Mutex
-	TraceDestinationsMtx   sync.Mutex
-	HTTPAddr               string
-	HTTPClient             *http.Client
-	AcceptingForwards      bool
-	AcceptingTraces        bool
-	ForwardTimeout         time.Duration
+	Sentry                     *raven.Client
+	Hostname                   string
+	ForwardDestinations        *consistent.Consistent
+	TraceDestinations          *consistent.Consistent
+	ForwardGRPCDestinations    *consistent.Consistent
+	Discoverer                 Discoverer
+	ConsulForwardService       string
+	ConsulTraceService         string
+	ConsulForwardGRPCService   string
+	ConsulInterval             time.Duration
+	ForwardDestinationsMtx     sync.Mutex
+	TraceDestinationsMtx       sync.Mutex
+	ForwardGRPCDestinationsMtx sync.Mutex
+	HTTPAddr                   string
+	HTTPClient                 *http.Client
+	AcceptingForwards          bool
+	AcceptingTraces            bool
+	AcceptingGRPCForwards      bool
+	ForwardTimeout             time.Duration
 
-	usingConsul       bool
-	usingKubernetes   bool
-	enableProfiling   bool
-	grpcServer        *grpc.Server
-	grpcProxyServer   *proxyserver.Server
-	grpcListenAddress string
-	TraceClient       *trace.Client
+	usingConsul     bool
+	usingKubernetes bool
+	enableProfiling bool
+	TraceClient     *trace.Client
+
+	// gRPC
+	grpcServer         *grpc.Server
+	grpcProxyServer    *proxyserver.Server
+	grpcListenAddress  string
+	grpcForwardAddress string
 }
 
 func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err error) {
@@ -97,12 +104,16 @@ func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err e
 	if p.ConsulTraceService != "" || conf.TraceAddress != "" {
 		p.AcceptingTraces = true
 	}
+	if p.ConsulForwardGRPCService != "" || conf.GrpcForwardAddress != "" {
+		p.AcceptingGRPCForwards = true
+	}
 
 	// We need a convenient way to know if we're even using Consul later
-	if p.ConsulForwardService != "" || p.ConsulTraceService != "" {
+	if p.ConsulForwardService != "" || p.ConsulTraceService != "" || p.ConsulForwardGRPCService != "" {
 		log.WithFields(logrus.Fields{
-			"consulForwardService": p.ConsulForwardService,
-			"consulTraceService":   p.ConsulTraceService,
+			"consulForwardService":     p.ConsulForwardService,
+			"consulTraceService":       p.ConsulTraceService,
+			"consulGRPCForwardService": p.ConsulForwardGRPCService,
 		}).Info("Using consul for service discovery")
 		p.usingConsul = true
 	}
@@ -120,6 +131,7 @@ func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err e
 
 	p.ForwardDestinations = consistent.New()
 	p.TraceDestinations = consistent.New()
+	p.ForwardGRPCDestinations = consistent.New()
 
 	if conf.ForwardTimeout != "" {
 		p.ForwardTimeout, err = time.ParseDuration(conf.ForwardTimeout)
@@ -138,14 +150,18 @@ func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err e
 	if p.ConsulTraceService == "" && conf.TraceAddress != "" {
 		p.TraceDestinations.Add(conf.TraceAddress)
 	}
+	if p.ConsulForwardGRPCService == "" && conf.GrpcForwardAddress != "" {
+		p.ForwardGRPCDestinations.Add(conf.GrpcForwardAddress)
+	}
 
-	if !p.AcceptingForwards && !p.AcceptingTraces {
+	if !p.AcceptingForwards && !p.AcceptingTraces && !p.AcceptingGRPCForwards {
 		err = errors.New("refusing to start with no Consul service names or static addresses in config")
 		logger.WithError(err).WithFields(logrus.Fields{
-			"consul_forward_service_name": p.ConsulForwardService,
-			"consul_trace_service_name":   p.ConsulTraceService,
-			"forward_address":             conf.ForwardAddress,
-			"trace_address":               conf.TraceAddress,
+			"consul_forward_service_name":      p.ConsulForwardService,
+			"consul_trace_service_name":        p.ConsulTraceService,
+			"consul_forward_grpc_service_name": p.ConsulForwardGRPCService,
+			"forward_address":                  conf.ForwardAddress,
+			"trace_address":                    conf.TraceAddress,
 		}).Error("Oops")
 		return
 	}
@@ -185,7 +201,7 @@ func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err e
 
 	p.grpcListenAddress = conf.GrpcAddress
 	if p.grpcListenAddress != "" {
-		p.grpcProxyServer = proxyserver.New(p.ForwardDestinations, &proxyserver.Options{
+		p.grpcProxyServer = proxyserver.New(p.ForwardGRPCDestinations, &proxyserver.Options{
 			Log:         logrus.NewEntry(log),
 			Timeout:     p.ForwardTimeout,
 			TraceClient: p.TraceClient,
@@ -249,6 +265,13 @@ func (p *Proxy) Start() {
 		}
 	}
 
+	if p.AcceptingGRPCForwards && p.ConsulForwardGRPCService != "" {
+		p.RefreshDestinations(p.ConsulForwardGRPCService, p.ForwardGRPCDestinations, &p.ForwardGRPCDestinationsMtx)
+		if len(p.ForwardGRPCDestinations.Members()) == 0 {
+			log.WithField("serviceName", p.ConsulForwardGRPCService).Fatal("Refusing to start with zero destinations for forwarding over gRPC.")
+		}
+	}
+
 	if p.usingConsul || p.usingKubernetes {
 		log.Info("Creating service discovery goroutine")
 		go func() {
@@ -258,15 +281,20 @@ func (p *Proxy) Start() {
 			ticker := time.NewTicker(p.ConsulInterval)
 			for range ticker.C {
 				log.WithFields(logrus.Fields{
-					"acceptingForwards":    p.AcceptingForwards,
-					"consulForwardService": p.ConsulForwardService,
-					"consulTraceService":   p.ConsulTraceService,
+					"acceptingForwards":        p.AcceptingForwards,
+					"consulForwardService":     p.ConsulForwardService,
+					"consulTraceService":       p.ConsulTraceService,
+					"consulForwardGRPCService": p.ConsulForwardGRPCService,
 				}).Debug("About to refresh destinations")
 				if p.AcceptingForwards && p.ConsulForwardService != "" {
 					p.RefreshDestinations(p.ConsulForwardService, p.ForwardDestinations, &p.ForwardDestinationsMtx)
 				}
 				if p.AcceptingTraces && p.ConsulTraceService != "" {
 					p.RefreshDestinations(p.ConsulTraceService, p.TraceDestinations, &p.TraceDestinationsMtx)
+				}
+				if p.AcceptingForwards && p.ConsulForwardGRPCService != "" {
+					p.RefreshDestinations(p.ConsulForwardGRPCService,
+						p.ForwardGRPCDestinations, &p.ForwardGRPCDestinationsMtx)
 				}
 			}
 		}()

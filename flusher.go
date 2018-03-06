@@ -63,7 +63,11 @@ func (s *Server) Flush(ctx context.Context) {
 	span.Add(s.computeMetricsFlushCounts(ms)...)
 
 	if s.IsLocal() {
-		go s.flushForward(span.Attach(ctx), tempMetrics)
+		if s.grpcForwardAddress == "" {
+			go s.flushForward(span.Attach(ctx), tempMetrics)
+		} else {
+			go s.forwardGRPC(span.Attach(ctx), tempMetrics)
+		}
 	} else {
 		span.Add(s.computeGlobalMetricsFlushCounts(ms)...)
 	}
@@ -400,10 +404,10 @@ func (s *Server) forwardGRPC(ctx context.Context, wms []WorkerMetrics) {
 	entry := log.WithFields(logrus.Fields{
 		"metrics":     len(metrics),
 		"destination": s.grpcForwardAddress,
-		"protoco;":    "grpc",
+		"protocol":    "grpc",
 	})
 
-	conn, err := grpc.Dial(s.grpcForwardAddress)
+	conn, err := grpc.Dial(s.grpcForwardAddress, grpc.WithInsecure())
 	if err != nil {
 		span.Add(ssf.Count("connection_error", 1, nil))
 		entry.WithError(err).Error("Failed to initialize a GRPC connection")

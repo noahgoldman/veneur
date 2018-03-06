@@ -120,6 +120,7 @@ type Server struct {
 	grpcForwardAddress string
 	grpcListenAddress  string
 	grpcServer         *grpc.Server
+	grpcListener       net.Listener
 }
 
 // SetLogger sets the default logger in veneur to the passed value.
@@ -480,9 +481,9 @@ func NewFromConfig(logger *logrus.Logger, conf Config) (*Server, error) {
 	conf.AwsSecretAccessKey = REDACTED
 
 	// Setup the grpc server if it was configured
-	if conf.GrpcAddress != "" {
-		ret.grpcForwardAddress = conf.GrpcForwardAddress
-		ret.grpcListenAddress = conf.GrpcAddress
+	ret.grpcForwardAddress = conf.GrpcForwardAddress
+	ret.grpcListenAddress = conf.GrpcAddress
+	if ret.grpcListenAddress != "" {
 		ret.grpcServer = grpc.NewServer()
 		forwardrpc.RegisterForwardServer(ret.grpcServer, ret)
 	}
@@ -967,36 +968,50 @@ func (s *Server) HTTPServe() {
 }
 
 func (s *Server) GRPCServe() {
-	lis, err := net.Listen("tcp", s.grpcListenAddress)
+	entry := log.WithField("address", s.grpcListenAddress)
+
+	var err error
+	s.grpcListener, err = net.Listen("tcp", s.grpcListenAddress)
 	if err != nil {
 		log.WithError(err).Error("Failed to bind the grpc server")
 		return
 	}
-	defer lis.Close()
+	defer s.grpcListener.Close()
 
-	log.WithField("address", s.grpcListenAddress).Info("Starting grpc server")
-	if err := s.grpcServer.Serve(lis); err != nil {
-		log.WithError(err).Error("grpc server was not shut down cleanly")
+	entry.Info("Starting gRPC server")
+	if err := s.grpcServer.Serve(s.grpcListener); err != nil {
+		entry.WithError(err).Error("grpc server was not shut down cleanly")
 	}
+
+	entry.Info("Stopped gRPC server")
 }
 
 func (s *Server) GRPCStop() {
-	if s.grpcServer != nil {
-		done := make(chan struct{})
-		go func() {
-			s.grpcServer.GracefulStop()
-			done <- struct{}{}
-		}()
-
-		select {
-		case <-done:
-			return
-		case <-time.After(10 * time.Second):
-			log.Info("Force-stopping the GRPC server after waiting for a " +
-				"a graceful shutdown")
-			s.grpcServer.Stop()
-		}
+	if s.grpcServer == nil {
+		return
 	}
+
+	done := make(chan struct{})
+	go func() {
+		s.grpcServer.GracefulStop()
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+		return
+	case <-time.After(10 * time.Second):
+		log.Info("Force-stopping the GRPC server after waiting for a " +
+			"a graceful shutdown")
+		s.grpcServer.Stop()
+	}
+}
+
+func (s *Server) GRPCAddress() net.Addr {
+	if s.grpcListener != nil {
+		return s.grpcListener.Addr()
+	}
+	return nil
 }
 
 // Shutdown signals the server to shut down after closing all
@@ -1006,6 +1021,7 @@ func (s *Server) Shutdown() {
 	log.Info("Shutting down server gracefully")
 	close(s.shutdown)
 	graceful.Shutdown()
+	s.GRPCStop()
 }
 
 // IsLocal indicates whether veneur is running as a local instance
