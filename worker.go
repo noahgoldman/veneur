@@ -90,7 +90,6 @@ func NewWorkerMetrics() WorkerMetrics {
 // Returns true if the metric entry was created and false otherwise.
 func (wm WorkerMetrics) Upsert(mk samplers.MetricKey, Scope samplers.MetricScope, tags []string) bool {
 	present := false
-	log.WithField("type", mk.Type).WithField("name", mk.Name).Info("Upserting")
 	switch mk.Type {
 	case counterTypeName:
 		if Scope == samplers.GlobalOnly {
@@ -177,7 +176,7 @@ func (w *Worker) Work() {
 				w.ImportMetric(j)
 			}
 		case m := <-w.ImportMetricChan:
-			w.ImportGRPCMetric(m)
+			w.ImportMetricGRPC(m)
 		case <-w.QuitChan:
 			// We have been asked to stop.
 			log.WithField("worker", w.id).Error("Stopping")
@@ -281,8 +280,8 @@ func (w *Worker) ImportMetric(other samplers.JSONMetric) {
 	}
 }
 
-// ImportMetric receives a metric from another veneur instance
-func (w *Worker) ImportGRPCMetric(other *metricpb.Metric) (err error) {
+// ImportMetricGRPC receives a metric from another veneur instance over gRPC
+func (w *Worker) ImportMetricGRPC(other *metricpb.Metric) (err error) {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
@@ -317,7 +316,7 @@ func (w *Worker) ImportGRPCMetric(other *metricpb.Metric) (err error) {
 	case nil:
 		err = errors.New("Can't import a metric with a nil value")
 	default:
-		err = errors.New("Unknown metric type for importing")
+		err = fmt.Errorf("Unknown metric type for importing: %T", v)
 	}
 
 	if err != nil {
