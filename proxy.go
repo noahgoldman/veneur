@@ -3,7 +3,6 @@ package veneur
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -15,16 +14,14 @@ import (
 	"time"
 
 	"golang.org/x/net/context"
-	"google.golang.org/grpc"
 
 	"github.com/DataDog/datadog-go/statsd"
 	raven "github.com/getsentry/raven-go"
 	"github.com/hashicorp/consul/api"
 	"github.com/pkg/profile"
 	"github.com/sirupsen/logrus"
-	"github.com/stripe/veneur/forwardrpc"
 	vhttp "github.com/stripe/veneur/http"
-	"github.com/stripe/veneur/proxy/server"
+	"github.com/stripe/veneur/proxysrv"
 	"github.com/stripe/veneur/samplers"
 	"github.com/stripe/veneur/ssf"
 	"github.com/stripe/veneur/trace"
@@ -64,8 +61,7 @@ type Proxy struct {
 	TraceClient     *trace.Client
 
 	// gRPC
-	grpcServer         *grpc.Server
-	grpcProxyServer    *proxyserver.Server
+	grpcServer         *proxysrv.Server
 	grpcListenAddress  string
 	grpcForwardAddress string
 }
@@ -199,16 +195,14 @@ func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err e
 		}
 	}
 
-	p.grpcListenAddress = conf.GrpcAddress
-	if p.grpcListenAddress != "" {
-		p.grpcProxyServer = proxyserver.New(p.ForwardGRPCDestinations, &proxyserver.Options{
-			Log:         logrus.NewEntry(log),
-			Timeout:     p.ForwardTimeout,
-			TraceClient: p.TraceClient,
-		})
-
-		p.grpcServer = grpc.NewServer()
-		forwardrpc.RegisterForwardServer(p.grpcServer, p.grpcProxyServer)
+	// TODO validate all fields
+	if conf.GrpcAddress != "" {
+		p.grpcListenAddress = conf.GrpcAddress
+		p.grpcServer = proxysrv.New(p.ForwardGRPCDestinations,
+			proxysrv.WithForwardTimeout(p.ForwardTimeout),
+			proxysrv.WithLog(logrus.NewEntry(log)),
+			proxysrv.WithTraceClient(p.TraceClient),
+		)
 	}
 
 	// TODO Size of replicas in config?
@@ -368,15 +362,12 @@ func (p *Proxy) HTTPServe() {
 }
 
 func (p *Proxy) GRPCServe() {
-	lis, err := net.Listen("tcp", p.grpcListenAddress)
-	if err != nil {
-		log.WithError(err).Error("Failed to bind the gRPC server")
-		return
-	}
-
-	log.WithField("address", p.grpcListenAddress).Info("Starting gRPC server")
-	if err := p.grpcServer.Serve(lis); err != nil {
-		log.WithError(err).Error("gRPC server was not shut down cleanly")
+	entry := log.WithField("address", p.grpcListenAddress)
+	entry.Info("Starting gRPC server")
+	if err := p.grpcServer.Serve(p.grpcListenAddress); err != nil {
+		entry.WithError(err).Error("gRPC server was not shut down cleanly")
+	} else {
+		entry.Info("Stopped gRPC server")
 	}
 }
 

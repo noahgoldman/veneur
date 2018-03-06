@@ -1,15 +1,16 @@
-package proxyserver
+package proxysrv
 
 import (
 	"context"
-	"math/rand"
-	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stripe/veneur/forwardrpc"
 	"github.com/stripe/veneur/forwardrpc/forwardtest"
 	"github.com/stripe/veneur/samplers/metricpb"
+	metrictest "github.com/stripe/veneur/samplers/metricpb/testutils"
 	"stathat.com/c/consistent"
 )
 
@@ -31,30 +32,16 @@ func stopTestForwardServers(ss []*forwardtest.Server) {
 	}
 }
 
-func makeRandomForwardMetric() *metricpb.Metric {
-	return &metricpb.Metric{
-		Name:  strconv.Itoa(rand.Int()),
-		Tags:  []string{strconv.Itoa(rand.Int())},
-		Value: &metricpb.Metric_Counter{&metricpb.CounterValue{rand.Int63()}},
-	}
-}
-
-func makeForwardMetrics(n int) []*metricpb.Metric {
-	res := make([]*metricpb.Metric, 100)
-	for i := range res {
-		res[i] = makeRandomForwardMetric()
-	}
-	return res
-}
-
 // Test that it forwards a decent number of input metrics to many different
 // destinations
 func TestManyDestinations(t *testing.T) {
 	// Test with many different numbers of forwarding destinations
 	for numDests := 1; numDests < 10; numDests++ {
 		var actual []*metricpb.Metric
-
+		var mtx sync.Mutex
 		dests := createTestForwardServers(t, numDests, func(ms []*metricpb.Metric) {
+			mtx.Lock()
+			defer mtx.Unlock()
 			actual = append(actual, ms...)
 		})
 		defer stopTestForwardServers(dests)
@@ -64,9 +51,9 @@ func TestManyDestinations(t *testing.T) {
 			ring.Add(dest.Addr().String())
 		}
 
-		expected := makeForwardMetrics(100)
+		expected := metrictest.RandomForwardMetrics(100)
 
-		server := New(ring, nil)
+		server := New(ring)
 		err := server.sendMetrics(context.Background(), &forwardrpc.MetricList{expected})
 		assert.NoError(t, err, "sendMetrics shouldn't have failed")
 
@@ -75,9 +62,9 @@ func TestManyDestinations(t *testing.T) {
 }
 
 func TestNoDestinations(t *testing.T) {
-	server := New(consistent.New(), nil)
+	server := New(consistent.New())
 	err := server.sendMetrics(context.Background(),
-		&forwardrpc.MetricList{makeForwardMetrics(10)})
+		&forwardrpc.MetricList{metrictest.RandomForwardMetrics(10)})
 	assert.Error(t, err, "sendMetrics should have returned an error when there "+
 		"are no valid destinations")
 }
@@ -87,9 +74,9 @@ func TestUnreachableDestinations(t *testing.T) {
 	ring.Add("not-a-real-host:9001")
 	ring.Add("another-bad-host:9001")
 
-	server := New(ring, nil)
+	server := New(ring)
 	err := server.sendMetrics(context.Background(),
-		&forwardrpc.MetricList{makeForwardMetrics(10)})
+		&forwardrpc.MetricList{metrictest.RandomForwardMetrics(10)})
 	assert.Error(t, err, "sendMetrics should have returned an error when all "+
 		"of the destinations are unreachable")
 }
@@ -103,9 +90,9 @@ func TestTimeout(t *testing.T) {
 		ring.Add(dest.Addr().String())
 	}
 
-	server := New(ring, &Options{Timeout: 1})
+	server := New(ring, WithForwardTimeout(1*time.Nanosecond))
 	err := server.sendMetrics(context.Background(),
-		&forwardrpc.MetricList{makeForwardMetrics(10)})
+		&forwardrpc.MetricList{metrictest.RandomForwardMetrics(10)})
 	assert.Error(t, err, "sendMetrics should have returned an error when the "+
 		"timeout was set to effectively zero")
 }

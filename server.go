@@ -27,11 +27,10 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/zenazn/goji/bind"
 	"github.com/zenazn/goji/graceful"
-	"google.golang.org/grpc"
 
 	"github.com/pkg/profile"
 
-	"github.com/stripe/veneur/forwardrpc"
+	"github.com/stripe/veneur/importsrv"
 	"github.com/stripe/veneur/plugins"
 	localfilep "github.com/stripe/veneur/plugins/localfile"
 	s3p "github.com/stripe/veneur/plugins/s3"
@@ -119,8 +118,7 @@ type Server struct {
 	// grpc
 	grpcForwardAddress string
 	grpcListenAddress  string
-	grpcServer         *grpc.Server
-	grpcListener       net.Listener
+	grpcServer         *importsrv.Server
 }
 
 // SetLogger sets the default logger in veneur to the passed value.
@@ -484,8 +482,12 @@ func NewFromConfig(logger *logrus.Logger, conf Config) (*Server, error) {
 	ret.grpcForwardAddress = conf.GrpcForwardAddress
 	ret.grpcListenAddress = conf.GrpcAddress
 	if ret.grpcListenAddress != "" {
-		ret.grpcServer = grpc.NewServer()
-		forwardrpc.RegisterForwardServer(ret.grpcServer, ret)
+		ingesters := make([]importsrv.MetricIngester, len(ret.Workers))
+		for i, worker := range ret.Workers {
+			ingesters[i] = worker
+		}
+
+		ret.grpcServer = importsrv.New(ingesters)
 	}
 
 	logger.WithField("config", conf).Debug("Initialized server")
@@ -968,18 +970,9 @@ func (s *Server) HTTPServe() {
 }
 
 func (s *Server) GRPCServe() {
-	entry := log.WithField("address", s.grpcListenAddress)
-
-	var err error
-	s.grpcListener, err = net.Listen("tcp", s.grpcListenAddress)
-	if err != nil {
-		log.WithError(err).Error("Failed to bind the grpc server")
-		return
-	}
-	defer s.grpcListener.Close()
-
+	entry := log.WithFields(logrus.Fields{"address": s.grpcListenAddress})
 	entry.Info("Starting gRPC server")
-	if err := s.grpcServer.Serve(s.grpcListener); err != nil {
+	if err := s.grpcServer.Serve(s.grpcListenAddress); err != nil {
 		entry.WithError(err).Error("grpc server was not shut down cleanly")
 	}
 
@@ -1005,13 +998,6 @@ func (s *Server) GRPCStop() {
 			"a graceful shutdown")
 		s.grpcServer.Stop()
 	}
-}
-
-func (s *Server) GRPCAddress() net.Addr {
-	if s.grpcListener != nil {
-		return s.grpcListener.Addr()
-	}
-	return nil
 }
 
 // Shutdown signals the server to shut down after closing all

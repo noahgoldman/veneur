@@ -1,9 +1,10 @@
-package proxyserver
+package proxysrv
 
 import (
 	"context"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"sync"
 	"time"
 
@@ -21,34 +22,49 @@ import (
 )
 
 type Server struct {
+	*grpc.Server
 	destinations *consistent.Consistent
-	opts         *Options
+	opts         *options
 }
 
-type Options struct {
-	Log         *logrus.Entry
-	Timeout     time.Duration
-	TraceClient *trace.Client
+type Option func(*options)
+
+type options struct {
+	log            *logrus.Entry
+	forwardTimeout time.Duration
+	traceClient    *trace.Client
 }
 
-func (o *Options) setDefaults() {
-	if o.Log == nil {
+func New(destinations *consistent.Consistent, opts ...Option) *Server {
+	res := &Server{
+		Server:       grpc.NewServer(),
+		destinations: destinations,
+		opts:         &options{},
+	}
+
+	for _, opt := range opts {
+		opt(res.opts)
+	}
+
+	if res.opts.log == nil {
 		log := logrus.New()
 		log.Out = ioutil.Discard
-		o.Log = logrus.NewEntry(log)
+		res.opts.log = logrus.NewEntry(log)
 	}
+
+	forwardrpc.RegisterForwardServer(res.Server, res)
+
+	return res
 }
 
-func New(destinations *consistent.Consistent, opts *Options) *Server {
-	if opts == nil {
-		opts = &Options{}
+func (s *Server) Serve(addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to bind the proxy server to '%s': %v",
+			addr, err)
 	}
-	opts.setDefaults()
 
-	return &Server{
-		destinations: destinations,
-		opts:         opts,
-	}
+	return s.Server.Serve(ln)
 }
 
 func (s *Server) SendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) (*empty.Empty, error) {
@@ -58,12 +74,12 @@ func (s *Server) SendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) 
 
 func (s *Server) sendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) (res error) {
 	span, _ := trace.StartSpanFromContext(ctx, "veneur.opentracing.proxy.forward_metrics")
-	defer span.ClientFinish(s.opts.TraceClient)
+	defer span.ClientFinish(s.opts.traceClient)
 
-	if s.opts.Timeout > 0 {
-		s.opts.Log.WithField("timeout", s.opts.Timeout).Info("Setting timeout")
+	if s.opts.forwardTimeout > 0 {
+		s.opts.log.WithField("timeout", s.opts.forwardTimeout).Info("Setting timeout")
 		var cancel func()
-		ctx, cancel = context.WithTimeout(ctx, s.opts.Timeout)
+		ctx, cancel = context.WithTimeout(ctx, s.opts.forwardTimeout)
 		defer cancel()
 	}
 	metrics := mlist.Metrics
@@ -125,7 +141,7 @@ func (s *Server) recordError(
 	}
 	span.Add(ssf.Count("proxy.proxied_metrics_failed", float32(numMetrics), tags))
 	span.Add(ssf.Count("proxy.forward_errors", 1, tags))
-	s.opts.Log.WithError(err).WithFields(logrus.Fields{
+	s.opts.log.WithError(err).WithFields(logrus.Fields{
 		"cause": cause,
 	}).Error(message)
 

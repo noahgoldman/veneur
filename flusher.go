@@ -384,16 +384,16 @@ func (s *Server) flushTraces(ctx context.Context) {
 }
 
 func (s *Server) forwardGRPC(ctx context.Context, wms []WorkerMetrics) {
-	span, _ := trace.StartSpanFromContext(ctx, "forward")
+	span, _ := trace.StartSpanFromContext(ctx, "")
 	span.SetTag("protocol", "grpc")
 	defer span.ClientFinish(s.TraceClient)
 
 	exportStart := time.Now()
 	metrics := s.exportForwardMetrics(wms)
 	span.Add(
-		ssf.Timing("duration_ns", time.Since(exportStart),
+		ssf.Timing("forward.duration_ns", time.Since(exportStart),
 			time.Nanosecond, map[string]string{"part": "export"}),
-		ssf.Gauge("post_metrics_total", float32(len(metrics)), nil),
+		ssf.Gauge("forward.post_metrics_total", float32(len(metrics)), nil),
 	)
 
 	if len(metrics) == 0 {
@@ -409,7 +409,7 @@ func (s *Server) forwardGRPC(ctx context.Context, wms []WorkerMetrics) {
 
 	conn, err := grpc.Dial(s.grpcForwardAddress, grpc.WithInsecure())
 	if err != nil {
-		span.Add(ssf.Count("connection_error", 1, nil))
+		span.Add(ssf.Count("forward.error_total", 1, map[string]string{"cause": "conn-failed"}))
 		entry.WithError(err).Error("Failed to initialize a GRPC connection")
 		return
 	}
@@ -420,15 +420,16 @@ func (s *Server) forwardGRPC(ctx context.Context, wms []WorkerMetrics) {
 	grpcStart := time.Now()
 	_, err = c.SendMetrics(ctx, &forwardrpc.MetricList{Metrics: metrics})
 	if err != nil {
-		span.Add(ssf.Count("error_total", 1, nil))
+		span.Add(ssf.Count("forward.error_total", 1, map[string]string{"cause": "send"}))
 		entry.WithError(err).Error("Failed to forward to an upstream Veneur")
 	} else {
 		entry.Info("Completed forward to an upstream Veneur")
 	}
 
 	span.Add(
-		ssf.Timing("duration_ns", time.Since(grpcStart), time.Nanosecond, map[string]string{"part": "grpc"}),
-		ssf.Count("error_total", 0, nil),
+		ssf.Timing("forward.duration_ns", time.Since(grpcStart), time.Nanosecond,
+			map[string]string{"part": "grpc"}),
+		ssf.Count("forward.error_total", 0, nil),
 	)
 }
 
@@ -442,19 +443,19 @@ func (s *Server) exportForwardMetrics(wms []WorkerMetrics) []*metricpb.Metric {
 	metrics := make([]*metricpb.Metric, 0, bufLen)
 	for _, wm := range wms {
 		for _, count := range wm.globalCounters {
-			metrics = appendMetric(metrics, count, metricpb.Type_Counter)
+			metrics = s.appendExportMetric(metrics, count, metricpb.Type_Counter)
 		}
 		for _, gauge := range wm.globalGauges {
-			metrics = appendMetric(metrics, gauge, metricpb.Type_Gauge)
+			metrics = s.appendExportMetric(metrics, gauge, metricpb.Type_Gauge)
 		}
 		for _, histo := range wm.histograms {
-			metrics = appendMetric(metrics, histo, metricpb.Type_Histogram)
+			metrics = s.appendExportMetric(metrics, histo, metricpb.Type_Histogram)
 		}
 		for _, set := range wm.sets {
-			metrics = appendMetric(metrics, set, metricpb.Type_Set)
+			metrics = s.appendExportMetric(metrics, set, metricpb.Type_Set)
 		}
 		for _, timer := range wm.timers {
-			metrics = appendMetric(metrics, timer, metricpb.Type_Timer)
+			metrics = s.appendExportMetric(metrics, timer, metricpb.Type_Timer)
 		}
 	}
 
@@ -466,7 +467,7 @@ type metricExporter interface {
 	Metric() (*metricpb.Metric, error)
 }
 
-func appendMetric(metrics []*metricpb.Metric, exp metricExporter, mType metricpb.Type) []*metricpb.Metric {
+func (s *Server) appendExportMetric(res []*metricpb.Metric, exp metricExporter, mType metricpb.Type) []*metricpb.Metric {
 	m, err := exp.Metric()
 	if err != nil {
 		log.WithFields(logrus.Fields{
@@ -474,9 +475,13 @@ func appendMetric(metrics []*metricpb.Metric, exp metricExporter, mType metricpb
 			"type":          mType,
 			"name":          exp.GetName(),
 		}).Error("Could not export metric")
-		return metrics
+		metrics.ReportOne(
+			s.TraceClient,
+			ssf.Count("forward.export_metric.errors", 1, map[string]string{"type": mType.String()}),
+		)
+		return res
 	}
 
 	m.Type = mType
-	return append(metrics, m)
+	return append(res, m)
 }
