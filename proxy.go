@@ -62,9 +62,8 @@ type Proxy struct {
 	TraceClient     *trace.Client
 
 	// gRPC
-	grpcServer         *proxysrv.Server
-	grpcListenAddress  string
-	grpcForwardAddress string
+	grpcServer        *proxysrv.Server
+	grpcListenAddress string
 }
 
 func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err error) {
@@ -197,7 +196,6 @@ func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err e
 		}
 	}
 
-	// TODO validate all fields
 	if conf.GrpcAddress != "" {
 		p.grpcListenAddress = conf.GrpcAddress
 		p.grpcServer = proxysrv.New(p.ForwardGRPCDestinations,
@@ -289,14 +287,15 @@ func (p *Proxy) Start() {
 					p.RefreshDestinations(p.ConsulTraceService, p.TraceDestinations, &p.TraceDestinationsMtx)
 				}
 				if p.AcceptingForwards && p.ConsulForwardGRPCService != "" {
-					p.RefreshDestinations(p.ConsulForwardGRPCService,
-						p.ForwardGRPCDestinations, &p.ForwardGRPCDestinationsMtx)
+					p.RefreshDestinations(p.ConsulForwardGRPCService, p.ForwardGRPCDestinations, &p.ForwardGRPCDestinationsMtx)
 				}
 			}
 		}()
 	}
 }
 
+// Start all of the the configured servers (gRPC or HTTP) and block until
+// one of them exist.  At that point, stop them both.
 func (p *Proxy) Serve() {
 	done := make(chan struct{})
 
@@ -363,6 +362,13 @@ func (p *Proxy) HTTPServe() {
 	graceful.Shutdown()
 }
 
+// Start the gRPC server and block until an error is encountered, or the server
+// is shutdown.
+//
+// TODO this doesn't handle SIGUSR2 and SIGHUP on it's own, unlike HTTPServe
+// As long as both are running this is actually fine, as Serve will stop
+// the gRPC server when the HTTP one exits.  When running just gRPC however,
+// the signal handling won't work.
 func (p *Proxy) GRPCServe() {
 	entry := log.WithField("address", p.grpcListenAddress)
 	entry.Info("Starting gRPC server")
@@ -373,22 +379,26 @@ func (p *Proxy) GRPCServe() {
 	}
 }
 
+// Try to perform a graceful stop of the gRPC server.  If it takes more than
+// 10 seconds, timeout and force-stop.
 func (p *Proxy) GRPCStop() {
-	if p.grpcServer != nil {
-		done := make(chan struct{})
-		go func() {
-			p.grpcServer.GracefulStop()
-			done <- struct{}{}
-		}()
+	if p.grpcServer == nil {
+		return
+	}
 
-		select {
-		case <-done:
-			return
-		case <-time.After(10 * time.Second):
-			log.Info("Force-stopping the GRPC server after waiting for a " +
-				"a graceful shutdown")
-			p.grpcServer.Stop()
-		}
+	done := make(chan struct{})
+	go func() {
+		p.grpcServer.GracefulStop()
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+		return
+	case <-time.After(10 * time.Second):
+		log.Info("Force-stopping the GRPC server after waiting for a " +
+			"a graceful shutdown")
+		p.grpcServer.Stop()
 	}
 }
 

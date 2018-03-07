@@ -83,7 +83,8 @@ type Server struct {
 
 	HTTPAddr string
 
-	ForwardAddr string
+	ForwardAddr    string
+	forwardUseGRPC bool
 
 	StatsdListenAddrs []net.Addr
 	SSFListenAddrs    []net.Addr
@@ -118,8 +119,6 @@ type Server struct {
 	// grpc
 	grpcListenAddress string
 	grpcServer        *importsrv.Server
-
-	forwardUseGRPC bool
 }
 
 // SetLogger sets the default logger in veneur to the passed value.
@@ -484,6 +483,7 @@ func NewFromConfig(logger *logrus.Logger, conf Config) (*Server, error) {
 	// Setup the grpc server if it was configured
 	ret.grpcListenAddress = conf.GrpcAddress
 	if ret.grpcListenAddress != "" {
+		// convert all the workers to the proper interface
 		ingesters := make([]importsrv.MetricIngester, len(ret.Workers))
 		for i, worker := range ret.Workers {
 			ingesters[i] = worker
@@ -904,6 +904,8 @@ func (s *Server) ReadTCPSocket(listener net.Listener) {
 	}
 }
 
+// Start all of the the configured servers (gRPC or HTTP) and block until
+// one of them exist.  At that point, stop them both.
 func (s *Server) Serve() {
 	done := make(chan struct{})
 
@@ -972,6 +974,13 @@ func (s *Server) HTTPServe() {
 	graceful.Shutdown()
 }
 
+// Start the gRPC server and block until an error is encountered, or the server
+// is shutdown.
+//
+// TODO this doesn't handle SIGUSR2 and SIGHUP on it's own, unlike HTTPServe
+// As long as both are running this is actually fine, as Serve will stop
+// the gRPC server when the HTTP one exits.  When running just gRPC however,
+// the signal handling won't work.
 func (s *Server) GRPCServe() {
 	entry := log.WithFields(logrus.Fields{"address": s.grpcListenAddress})
 	entry.Info("Starting gRPC server")
@@ -982,6 +991,8 @@ func (s *Server) GRPCServe() {
 	entry.Info("Stopped gRPC server")
 }
 
+// Try to perform a graceful stop of the gRPC server.  If it takes more than
+// 10 seconds, timeout and force-stop.
 func (s *Server) GRPCStop() {
 	if s.grpcServer == nil {
 		return
