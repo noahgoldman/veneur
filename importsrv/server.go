@@ -61,6 +61,9 @@ func New(metricOuts []MetricIngester, opts ...Option) *Server {
 	return res
 }
 
+// Serve starts a gRPC listener on the specified address and blocks while
+// listening for requests. If listening is iterrupted by some means other
+// than Stop or GracefulStop being called, it returns a non-nil error.
 func (s *Server) Serve(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -71,6 +74,8 @@ func (s *Server) Serve(addr string) error {
 	return s.Server.Serve(ln)
 }
 
+// SendMetrics takes a list of metrics and hashes each one (based on the
+// metric key) to a specific metric ingester.
 func (s *Server) SendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) (*empty.Empty, error) {
 	span, _ := trace.StartSpanFromContext(ctx, "veneur.opentracing.importsrv.handle_send_metrics")
 	span.SetTag("protocol", "grpc")
@@ -80,7 +85,15 @@ func (s *Server) SendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) 
 
 	for _, m := range mlist.Metrics {
 		h.Reset()
-		h.Write([]byte(samplers.NewMetricKeyFromMetric(m).String()))
+
+		// Add the MetricKey to the hash
+		key := samplers.NewMetricKeyFromMetric(m).String()
+		if _, err := h.Write([]byte(key)); err != nil {
+			span.Add(ssf.Count("import.metric_error_total", 1,
+				map[string]string{"cause": "io"}))
+			continue
+		}
+
 		workerIdx := h.Sum32() % uint32(len(s.metricOuts))
 		s.metricOuts[workerIdx].IngestMetric(m)
 	}

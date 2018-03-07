@@ -3,6 +3,9 @@ package metricpb;
 
 import "tdigest/tdigest.proto";
 
+// Metric is a common container for any metric type. Common fields such as
+// Name, Tags, and Type are all present for all types, while the value can
+// vary.
 message Metric {
     string name = 1;
     repeated string tags = 2;
@@ -16,6 +19,7 @@ message Metric {
     }
 }
 
+// Type can be any of the valid metric types recognized by Veneur.
 enum Type {
     Counter = 0;
     Gauge = 1;
@@ -24,22 +28,23 @@ enum Type {
     Timer = 4;
 }
 
+// CounterValue wraps the value of a counter
 message CounterValue {
     int64 value = 1;
 }
 
+// GaugeValue wraps the value of a gauge
 message GaugeValue {
     double value = 1;
 }
 
-// HistogramValue includes fields that should be serialized into the Value
-// field of a JSONMetric.  Typically there shouldn't be any reason to use
-// this type directly, as converting a Histo to a JSONMetric and back should
-// be done with (*Histo).Export and (*Histo).Combine
+// HistogramValue for now just includes the t-digest.  This can be expanded
+// to include the other values such as the sum, average, etc.
 message HistogramValue {
     tdigest.MergingDigestData t_digest = 1;
 }
 
+// SetValue contains a binary-encoded HyperLogLog
 message SetValue {
     bytes hyper_log_log = 1;
 }
