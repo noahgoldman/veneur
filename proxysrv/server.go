@@ -20,6 +20,7 @@ import (
 	"github.com/stripe/veneur/forwardrpc"
 	"github.com/stripe/veneur/samplers"
 	"github.com/stripe/veneur/samplers/metricpb"
+	"github.com/stripe/veneur/trace/metrics"
 
 	"github.com/stripe/veneur/ssf"
 	"github.com/stripe/veneur/trace"
@@ -190,7 +191,7 @@ func (s *Server) destForMetric(m *metricpb.Metric) (string, error) {
 
 // forward sends a set of metrics to the destination address, and returns
 // an error if necessary.
-func (s *Server) forward(ctx context.Context, dest string, metrics []*metricpb.Metric) (err error) {
+func (s *Server) forward(ctx context.Context, dest string, ms []*metricpb.Metric) (err error) {
 	conn, err := grpc.Dial(dest, grpc.WithInsecure())
 	if err != nil {
 		return fmt.Errorf("failed to create a gRPC connection: %v", err)
@@ -202,16 +203,16 @@ func (s *Server) forward(ctx context.Context, dest string, metrics []*metricpb.M
 	}()
 
 	c := forwardrpc.NewForwardClient(conn)
-	_, err = c.SendMetrics(ctx, &forwardrpc.MetricList{Metrics: metrics})
+	_, err = c.SendMetrics(ctx, &forwardrpc.MetricList{Metrics: ms})
 	if err != nil {
 		return fmt.Errorf("failed to send %d metrics over gRPC: %v",
-			len(metrics), err)
+			len(ms), err)
 	}
 
-	metrics.ReportOne(s.opts.traceClient, ssf.RandomlySample(0.1,
-		ssf.Gauge("metrics_by_destination", float32(len(metrics)),
+	metrics.ReportBatch(s.opts.traceClient, ssf.RandomlySample(0.1,
+		ssf.Gauge("metrics_by_destination", float32(len(ms)),
 			map[string]string{"destination": dest}),
-	)...)
+	))
 
 	return nil
 }

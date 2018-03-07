@@ -23,7 +23,8 @@ func TestServerFlushGRPC(t *testing.T) {
 	defer testServer.Stop()
 
 	localCfg := localConfig()
-	localCfg.GrpcForwardAddress = testServer.Addr().String()
+	localCfg.ForwardAddress = testServer.Addr().String()
+	localCfg.ForwardUseGrpc = true
 	local := setupVeneurServer(t, localCfg, nil, nil, nil)
 	defer local.Shutdown()
 
@@ -54,7 +55,8 @@ func TestServerFlushGRPC(t *testing.T) {
 // Just test that a flushing to a bad address is handled
 func TestServerFlushGRPCBadAddress(t *testing.T) {
 	localCfg := localConfig()
-	localCfg.GrpcForwardAddress = "bad-address:123"
+	localCfg.ForwardAddress = "bad-address:123"
+	localCfg.ForwardUseGrpc = true
 	local := setupVeneurServer(t, localCfg, nil, nil, nil)
 	defer local.Shutdown()
 

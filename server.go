@@ -116,9 +116,10 @@ type Server struct {
 	TraceClient *trace.Client
 
 	// grpc
-	grpcForwardAddress string
-	grpcListenAddress  string
-	grpcServer         *importsrv.Server
+	grpcListenAddress string
+	grpcServer        *importsrv.Server
+
+	forwardUseGRPC bool
 }
 
 // SetLogger sets the default logger in veneur to the passed value.
@@ -478,8 +479,9 @@ func NewFromConfig(logger *logrus.Logger, conf Config) (*Server, error) {
 	conf.AwsAccessKeyID = REDACTED
 	conf.AwsSecretAccessKey = REDACTED
 
+	ret.forwardUseGRPC = conf.ForwardUseGrpc
+
 	// Setup the grpc server if it was configured
-	ret.grpcForwardAddress = conf.GrpcForwardAddress
 	ret.grpcListenAddress = conf.GrpcAddress
 	if ret.grpcListenAddress != "" {
 		ingesters := make([]importsrv.MetricIngester, len(ret.Workers))

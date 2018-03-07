@@ -43,7 +43,8 @@ func newForwardGRPCFixture(t testing.TB, localConfig Config, sink sinks.MetricSi
 	}()
 	assert.NoError(t, err)
 
-	localConfig.GrpcForwardAddress = proxyCfg.GrpcAddress
+	localConfig.ForwardAddress = proxyCfg.GrpcAddress
+	localConfig.ForwardUseGrpc = true
 	local := setupVeneurServer(t, localConfig, nil, nil, nil)
 
 	return &forwardGRPCFixture{t: t, proxy: &proxy, global: global, local: local}
