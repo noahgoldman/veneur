@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/pprof"
+	"net/url"
 	"os"
 	"reflect"
 	"strconv"
@@ -543,6 +544,12 @@ func (p *Proxy) doPost(ctx context.Context, wg *sync.WaitGroup, destination stri
 	batchSize := len(batch)
 	if batchSize < 1 {
 		return
+	}
+
+	// Make sure the destination always has a valid 'http' prefix.
+	if !strings.HasPrefix(destination, "http") {
+		u := url.URL{Scheme: "http", Host: destination}
+		destination = u.String()
 	}
 
 	endpoint := fmt.Sprintf("%s/import", destination)

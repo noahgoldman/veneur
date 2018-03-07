@@ -16,10 +16,15 @@ import (
 	"google.golang.org/grpc"
 )
 
+// MetricIngester reads metrics from protobufs
 type MetricIngester interface {
 	IngestMetric(*metricpb.Metric)
 }
 
+// Server wraps a gRPC server and implements the forwardrpc.Forward service.
+// It reads a list of metrics, and based on the provided key chooses a
+// MetricIngester to send it to.  A unique metric (name, tags, and type)
+// should always be routed to the same MetricIngester.
 type Server struct {
 	*grpc.Server
 	metricOuts []MetricIngester
@@ -30,8 +35,12 @@ type options struct {
 	traceClient *trace.Client
 }
 
+// Option is returned by functions that serve as options to New, like
+// "With..."
 type Option func(*options)
 
+// New creates a unstarted Server with the input MetricIngester's to send
+// output to.
 func New(metricOuts []MetricIngester, opts ...Option) *Server {
 	res := &Server{
 		Server:     grpc.NewServer(),
