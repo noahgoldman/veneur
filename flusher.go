@@ -384,6 +384,7 @@ func (s *Server) flushTraces(ctx context.Context) {
 	}
 }
 
+// forwardGRPC forwards all input metrics to a downstream Veneur, over gRPC.
 func (s *Server) forwardGRPC(ctx context.Context, wms []WorkerMetrics) {
 	span, _ := trace.StartSpanFromContext(ctx, "")
 	span.SetTag("protocol", "grpc")
@@ -434,6 +435,8 @@ func (s *Server) forwardGRPC(ctx context.Context, wms []WorkerMetrics) {
 	)
 }
 
+// exportForwardedMetrics converts a slice of WorkerMetrics to a slice
+// of protobuf-compatible metrics for use in forwarding over gRPC
 func (s *Server) exportForwardMetrics(wms []WorkerMetrics) []*metricpb.Metric {
 	bufLen := 0
 	for _, wm := range wms {
@@ -463,11 +466,15 @@ func (s *Server) exportForwardMetrics(wms []WorkerMetrics) []*metricpb.Metric {
 	return metrics
 }
 
+// A type implemented by all valid samplers
 type metricExporter interface {
 	GetName() string
 	Metric() (*metricpb.Metric, error)
 }
 
+// appendExportMetric appends the exported version of the input metric, with
+// the inputted type.  If the export fails, the original slice is returned
+// and an error is logged
 func (s *Server) appendExportMetric(res []*metricpb.Metric, exp metricExporter, mType metricpb.Type) []*metricpb.Metric {
 	m, err := exp.Metric()
 	if err != nil {
@@ -478,7 +485,9 @@ func (s *Server) appendExportMetric(res []*metricpb.Metric, exp metricExporter, 
 		}).Error("Could not export metric")
 		metrics.ReportOne(
 			s.TraceClient,
-			ssf.Count("forward.export_metric.errors", 1, map[string]string{"type": mType.String()}),
+			ssf.Count("forward.export_metric.errors", 1, map[string]string{
+				"type": mType.String(),
+			}),
 		)
 		return res
 	}

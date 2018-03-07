@@ -114,6 +114,7 @@ func (s *Server) sendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) 
 			res = multierror.Append(res, s.recordError(span, err, "no-destination",
 				"failed to get a destination for a metric", 1))
 		} else {
+			// Lazily initialize keys in the map as necessary
 			if _, ok := dests[dest]; !ok {
 				dests[dest] = make([]*metricpb.Metric, 0, 1)
 			}
@@ -209,7 +210,7 @@ func (s *Server) forward(ctx context.Context, dest string, ms []*metricpb.Metric
 			len(ms), err)
 	}
 
-	metrics.ReportBatch(s.opts.traceClient, ssf.RandomlySample(0.1,
+	_ = metrics.ReportBatch(s.opts.traceClient, ssf.RandomlySample(0.1,
 		ssf.Gauge("metrics_by_destination", float32(len(ms)),
 			map[string]string{"destination": dest}),
 	))
