@@ -208,5 +208,10 @@ func (s *Server) forward(ctx context.Context, dest string, metrics []*metricpb.M
 			len(metrics), err)
 	}
 
+	metrics.ReportOne(s.opts.traceClient, ssf.RandomlySample(0.1,
+		ssf.Gauge("metrics_by_destination", float32(len(metrics)),
+			map[string]string{"destination": dest}),
+	)...)
+
 	return nil
 }

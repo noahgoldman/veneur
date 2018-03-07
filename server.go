@@ -487,7 +487,8 @@ func NewFromConfig(logger *logrus.Logger, conf Config) (*Server, error) {
 			ingesters[i] = worker
 		}
 
-		ret.grpcServer = importsrv.New(ingesters)
+		ret.grpcServer = importsrv.New(ingesters,
+			importsrv.WithTraceClient(ret.TraceClient))
 	}
 
 	logger.WithField("config", conf).Debug("Initialized server")

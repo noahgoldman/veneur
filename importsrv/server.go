@@ -88,7 +88,8 @@ func (s *Server) SendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) 
 	span.Add(
 		ssf.Timing("import.response_duration_ns", time.Since(span.Start),
 			time.Nanosecond, map[string]string{"part": "merge"}),
-		ssf.Count("import.metrics_total", float32(len(mlist.Metrics)), nil),
+		ssf.Count("import.metrics_total", float32(len(mlist.Metrics)),
+			map[string]string{"protocol": "grpc"}),
 	)
 
 	return &empty.Empty{}, nil
