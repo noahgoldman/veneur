@@ -72,7 +72,7 @@ func (s *Server) Serve(addr string) error {
 }
 
 func (s *Server) SendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) (*empty.Empty, error) {
-	span, _ := trace.StartSpanFromContext(ctx, "veneur.opentracing.import.import_metrics")
+	span, _ := trace.StartSpanFromContext(ctx, "veneur.opentracing.importsrv.handle_send_metrics")
 	span.SetTag("protocol", "grpc")
 	defer span.ClientFinish(s.opts.traceClient)
 

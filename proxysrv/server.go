@@ -92,11 +92,10 @@ func (s *Server) SendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) 
 }
 
 func (s *Server) sendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) (res error) {
-	span, _ := trace.StartSpanFromContext(ctx, "veneur.opentracing.proxy.forward_metrics")
+	span, _ := trace.StartSpanFromContext(ctx, "veneur.opentracing.proxysrv.send_metrics")
 	defer span.ClientFinish(s.opts.traceClient)
 
 	if s.opts.forwardTimeout > 0 {
-		s.opts.log.WithField("timeout", s.opts.forwardTimeout).Info("Setting timeout")
 		var cancel func()
 		ctx, cancel = context.WithTimeout(ctx, s.opts.forwardTimeout)
 		defer cancel()
@@ -104,7 +103,7 @@ func (s *Server) sendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) 
 	metrics := mlist.Metrics
 	span.Add(ssf.Count("import.metrics_total", float32(len(metrics)), map[string]string{
 		"veneurglobalonly": "",
-		"input":            "grpc",
+		"protocol":         "grpc",
 	}))
 
 	dests := make(map[string][]*metricpb.Metric)
@@ -139,10 +138,17 @@ func (s *Server) sendMetrics(ctx context.Context, mlist *forwardrpc.MetricList) 
 
 	wg.Wait() // Wait for all the above goroutines to complete
 
-	span.Add(ssf.Timing("proxy.duration_ns", time.Since(span.Start), time.Nanosecond, map[string]string{
+	protocolTags := map[string]string{"protocol": "grpc"}
+	span.Add(ssf.RandomlySample(0.1,
+		ssf.Timing("proxy.duration_ns", time.Since(span.Start), time.Nanosecond,
+			protocolTags),
+		ssf.Count("proxy.proxied_metrics_total", float32(len(metrics)), protocolTags),
+	)...)
+
+	s.opts.log.WithFields(logrus.Fields{
 		"protocol": "grpc",
-	}))
-	span.Add(ssf.Count("proxy.proxied_metrics_total", float32(len(metrics)), nil))
+		"duration": time.Since(span.Start),
+	}).Info("Completed forwarding to downstream Veneurs")
 
 	return res
 }
