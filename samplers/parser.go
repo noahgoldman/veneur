@@ -43,6 +43,8 @@ type MetricKey struct {
 	JoinedTags string `json:"tagstring"` // tags in deterministic order, joined with commas
 }
 
+// NewMetricKeyFromMetric initializes a MetricKey from the protobuf-compatible
+// metricpb.Metric
 func NewMetricKeyFromMetric(m *metricpb.Metric) MetricKey {
 	return MetricKey{
 		Name:       m.Name,

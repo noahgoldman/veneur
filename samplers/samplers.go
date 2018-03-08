@@ -129,6 +129,7 @@ type Counter struct {
 	value int64
 }
 
+// GetName returns the name of the counter
 func (c *Counter) GetName() string {
 	return c.Name
 }
@@ -187,6 +188,9 @@ func (c *Counter) Combine(other []byte) error {
 	return nil
 }
 
+// Metric returns a protobuf-compatible metricpb.Metric with values set
+// at the time this function was called.  This should be used to export
+// a Counter for forwarding.
 func (c *Counter) Metric() (*metricpb.Metric, error) {
 	return &metricpb.Metric{
 		Name:  c.Name,
@@ -196,6 +200,7 @@ func (c *Counter) Metric() (*metricpb.Metric, error) {
 	}, nil
 }
 
+// Merge adds the value from the input CounterValue to this one
 func (c *Counter) Merge(v *metricpb.CounterValue) {
 	c.value += v.Value
 }
@@ -266,10 +271,14 @@ func (g *Gauge) Combine(other []byte) error {
 	return nil
 }
 
+// GetName returns the name of the gauge
 func (g *Gauge) GetName() string {
 	return g.Name
 }
 
+// Metric returns a protobuf-compatible metricpb.Metric with values set
+// at the time this function was called.  This should be used to export
+// a Gauge for forwarding.
 func (g *Gauge) Metric() (*metricpb.Metric, error) {
 	return &metricpb.Metric{
 		Name:  g.Name,
@@ -279,6 +288,7 @@ func (g *Gauge) Metric() (*metricpb.Metric, error) {
 	}, nil
 }
 
+// Merge sets the value of this Gauge to the value of the other
 func (g *Gauge) Merge(v *metricpb.GaugeValue) {
 	g.value = v.Value
 }
@@ -359,10 +369,14 @@ func (s *Set) Combine(other []byte) error {
 	return nil
 }
 
+// GetName returns the name of the set
 func (s *Set) GetName() string {
 	return s.Name
 }
 
+// Metric returns a protobuf-compatible metricpb.Metric with values set
+// at the time this function was called.  This should be used to export
+// a Set for forwarding.
 func (s *Set) Metric() (*metricpb.Metric, error) {
 	encoded, err := s.Hll.MarshalBinary()
 	if err != nil {
@@ -377,6 +391,8 @@ func (s *Set) Metric() (*metricpb.Metric, error) {
 	}, nil
 }
 
+// Merge combines the HyperLogLog with that of the input Set.  Since the
+// hll is marshalled in the value, it unmarshals it first.
 func (s *Set) Merge(v *metricpb.SetValue) error {
 	return s.Combine(v.HyperLogLog)
 }
@@ -582,10 +598,14 @@ func (h *Histo) Combine(other []byte) error {
 	return nil
 }
 
+// GetName returns the name of the Histo
 func (h *Histo) GetName() string {
 	return h.Name
 }
 
+// Metric returns a protobuf-compatible metricpb.Metric with values set
+// at the time this function was called.  This should be used to export
+// a Histo for forwarding.
 func (h *Histo) Metric() (*metricpb.Metric, error) {
 	return &metricpb.Metric{
 		Name: h.Name,
@@ -597,6 +617,8 @@ func (h *Histo) Metric() (*metricpb.Metric, error) {
 	}, nil
 }
 
+// Merge merges the t-digests of the two histograms and mutates the state
+// of this one.
 func (h *Histo) Merge(v *metricpb.HistogramValue) {
 	if v.TDigest != nil {
 		h.Value.Merge(tdigest.NewMergingFromData(v.TDigest))
