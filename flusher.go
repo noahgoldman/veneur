@@ -307,45 +307,75 @@ func (s *Server) flushForward(ctx context.Context, wms []WorkerMetrics) {
 	defer span.ClientFinish(s.TraceClient)
 	jmLength := 0
 	for _, wm := range wms {
-		jmLength += len(wm.globalCounters)
-		jmLength += len(wm.globalGauges)
 		jmLength += len(wm.histograms)
-		jmLength += len(wm.globalHistograms)
 		jmLength += len(wm.sets)
 		jmLength += len(wm.timers)
-		jmLength += len(wm.globalTimers)
 	}
 
 	jsonMetrics := make([]samplers.JSONMetric, 0, jmLength)
 	exportStart := time.Now()
 	for _, wm := range wms {
 		for _, count := range wm.globalCounters {
-			jsonMetrics = s.appendJSONMetric(count, jsonMetrics, counterTypeName,
-				samplers.GlobalOnly)
+			jm, err := count.Export()
+			if err != nil {
+				log.WithFields(logrus.Fields{
+					logrus.ErrorKey: err,
+					"type":          "counter",
+					"name":          count.Name,
+				}).Error("Could not export metric")
+				continue
+			}
+			jsonMetrics = append(jsonMetrics, jm)
 		}
 		for _, gauge := range wm.globalGauges {
-			jsonMetrics = s.appendJSONMetric(gauge, jsonMetrics, gaugeTypeName,
-				samplers.GlobalOnly)
+			jm, err := gauge.Export()
+			if err != nil {
+				log.WithFields(logrus.Fields{
+					logrus.ErrorKey: err,
+					"type":          "gauge",
+					"name":          gauge.Name,
+				}).Error("Could not export metric")
+				continue
+			}
+			jsonMetrics = append(jsonMetrics, jm)
 		}
 		for _, histo := range wm.histograms {
-			jsonMetrics = s.appendJSONMetric(histo, jsonMetrics, histogramTypeName,
-				samplers.MixedScope)
-		}
-		for _, histo := range wm.globalHistograms {
-			jsonMetrics = s.appendJSONMetric(histo, jsonMetrics, histogramTypeName,
-				samplers.GlobalOnly)
+			jm, err := histo.Export()
+			if err != nil {
+				log.WithFields(logrus.Fields{
+					logrus.ErrorKey: err,
+					"type":          "histogram",
+					"name":          histo.Name,
+				}).Error("Could not export metric")
+				continue
+			}
+			jsonMetrics = append(jsonMetrics, jm)
 		}
 		for _, set := range wm.sets {
-			jsonMetrics = s.appendJSONMetric(set, jsonMetrics, setTypeName,
-				samplers.MixedScope)
+			jm, err := set.Export()
+			if err != nil {
+				log.WithFields(logrus.Fields{
+					logrus.ErrorKey: err,
+					"type":          "set",
+					"name":          set.Name,
+				}).Error("Could not export metric")
+				continue
+			}
+			jsonMetrics = append(jsonMetrics, jm)
 		}
 		for _, timer := range wm.timers {
-			jsonMetrics = s.appendJSONMetric(timer, jsonMetrics, timerTypeName,
-				samplers.MixedScope)
-		}
-		for _, timer := range wm.globalTimers {
-			jsonMetrics = s.appendJSONMetric(timer, jsonMetrics, timerTypeName,
-				samplers.GlobalOnly)
+			jm, err := timer.Export()
+			if err != nil {
+				log.WithFields(logrus.Fields{
+					logrus.ErrorKey: err,
+					"type":          "timer",
+					"name":          timer.Name,
+				}).Error("Could not export metric")
+				continue
+			}
+			// the exporter doesn't know that these two are "different"
+			jm.Type = "timer"
+			jsonMetrics = append(jsonMetrics, jm)
 		}
 	}
 	span.Add(ssf.Timing("forward.duration_ns", time.Since(exportStart), time.Nanosecond, map[string]string{"part": "export"}),
@@ -489,35 +519,4 @@ func (s *Server) appendExportMetric(
 	m.Type = mType
 	m.Scope = scope
 	return append(res, m)
-}
-
-// exporter is any metric that can be exported (and has a name)
-type exporter interface {
-	Export() (samplers.JSONMetric, error)
-	GetName() string
-}
-
-// appendJSONMetric appends a JSONMetric exported by the input metric m, or
-// does nothing and logs if the export fails.
-func (s *Server) appendJSONMetric(
-	m exporter,
-	metrics []samplers.JSONMetric,
-	mType string,
-	scope samplers.MetricScope,
-) []samplers.JSONMetric {
-	jm, err := m.Export()
-	if err != nil {
-		log.WithFields(logrus.Fields{
-			logrus.ErrorKey: err,
-			"type":          mType,
-			"name":          m.GetName(),
-			"scope":         scope,
-		}).Error("Could not export metric")
-		return metrics
-	}
-
-	jm.Type = mType
-	jm.Scope = scope
-
-	return append(metrics, jm)
 }

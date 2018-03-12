@@ -2,7 +2,6 @@ package samplers
 
 import (
 	"fmt"
-	"math"
 	"math/rand"
 	"strconv"
 	"testing"
@@ -449,42 +448,17 @@ func TestHistoMergeOneSideOnly(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 
 	h := histoWithSamples("a.b.c", []string{"a:b"}, 100)
-	jm, err := h.Export()
-	assert.NoError(t, err, "should have exported successfully")
+	m, err := h.Metric()
+	assert.NoError(t, err, "should have exported successfully to a metric")
 
 	h2 := NewHist("a.b.c", []string{"a:b"})
-	assert.NoError(t, h2.Combine(jm.Value), "should have combined successfully")
+	h2.Merge(m.GetHistogram())
 	assert.InEpsilon(t, h.tDigest.Quantile(0.5), h2.tDigest.Quantile(0.5), 0.02, "50th percentiles did not match after merging")
 	assert.Equal(t, h.weight, h2.weight, "merged histogram should have the weight of the other")
 	assert.Equal(t, h.min, h2.min, "merged histogram should have the min of the other")
 	assert.Equal(t, h.max, h2.max, "merged histogram should have the max of the other")
 	assert.Equal(t, h.sum, h2.sum, "merged histogram should have the sum of the other")
 	assert.Equal(t, h.reciprocalSum, h2.reciprocalSum, "merged histogram should have the reciprocal sum of the other")
-}
-
-// Test the Metric and Merge function on Set
-func TestHistoMergeMetric(t *testing.T) {
-	rand.Seed(time.Now().Unix())
-
-	h := NewHist("a.b.c", []string{"a:b"})
-	for i := 0; i < 100; i++ {
-		h.Sample(rand.NormFloat64(), 1.0)
-	}
-
-	m, err := h.Metric()
-	assert.NoError(t, err, "should have created a metricpb.Metric from a Histo")
-
-	h2 := NewHist("a.b.c", []string{"a:b"})
-	h2.Merge(m.GetHistogram())
-	assert.InEpsilon(t, h.tDigest.Quantile(0.5), h2.tDigest.Quantile(0.5), 0.02, "50th percentiles did not match after merging")
-	assert.InDelta(t, 0, h2.weight, 0.02, "merged histogram should have count of zero")
-	assert.True(t, math.IsInf(h2.min, +1), "merged histogram should have local minimum of +inf")
-	assert.True(t, math.IsInf(h2.max, -1), "merged histogram should have local minimum of -inf")
-
-	h2.Sample(1.0, 1.0)
-	assert.InDelta(t, 1.0, h2.weight, 0.02, "merged histogram should have count of 1 after adding a value")
-	assert.InDelta(t, 1.0, h2.min, 0.02, "merged histogram should have min of 1 after adding a value")
-	assert.InDelta(t, 1.0, h2.max, 0.02, "merged histogram should have max of 1 after adding a value")
 }
 
 func TestHistoMergeBoth(t *testing.T) {
@@ -547,9 +521,9 @@ func TestHistoMergeBoth(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.description, func(t *testing.T) {
-			jm, err := h.Export()
-			assert.NoError(t, err, "the histo should have exported successfully")
-			assert.NoError(t, tc.toCombine.Combine(jm.Value), "combining the two should have succeeded")
+			m, err := h.Metric()
+			assert.NoError(t, err, "the histo should have exported successfully to a metric")
+			tc.toCombine.Merge(m.GetHistogram())
 
 			assert.Equal(t, tc.expected.min, tc.toCombine.min,
 				"the merged min should be correct")
@@ -565,49 +539,6 @@ func TestHistoMergeBoth(t *testing.T) {
 				"merged histogram should have the reciprocal sum of the other")
 		})
 	}
-}
-
-// This test can be removed once the code handling the old binary format in
-// Histo.Combine is removed.
-func TestHistoCombineOldFormat(t *testing.T) {
-	rand.Seed(time.Now().Unix())
-
-	h := histoWithSamples("a.b", []string{}, 0)
-	other := histoWithSamples("a.b", []string{}, 100)
-
-	// Set these parameters to different values between the two
-	for i, hist := range []*Histo{h, other} {
-		val := float64(i + 1)
-		hist.weight = val
-		hist.min = val
-		hist.max = val
-		hist.sum = val
-		hist.reciprocalSum = val
-	}
-
-	encoded, err := other.tDigest.GobEncode()
-	assert.NoError(t, err, "the other histogram's tdigest should have been encoded")
-
-	err = h.Combine(encoded)
-	assert.NoError(t, err, "combining with the binary tdigest should have succeeded")
-
-	// The tdigests should have been merged
-	assert.Equal(t, other.tDigest.Quantile(0.5), h.tDigest.Quantile(0.5),
-		"the combined histogram should have the median of the merged tdigest")
-
-	// All the other values should've been unchanged
-	expected := float64(1)
-	assert.Equal(t, expected, h.weight, "the weight shouldn't have changed")
-	assert.Equal(t, expected, h.min, "the min shouldn't have changed")
-	assert.Equal(t, expected, h.max, "the max shouldn't have changed")
-	assert.Equal(t, expected, h.sum, "the sum shouldn't have changed")
-	assert.Equal(t, expected, h.reciprocalSum, "the reciprocal sum shouldn't have changed")
-}
-
-func TestHistoCombineInvalidData(t *testing.T) {
-	h := NewHist("a.b", []string{})
-	err := h.Combine([]byte("invalid data"))
-	assert.Error(t, err, "combining with invalid data should've failed")
 }
 
 func TestMetricKeyEquality(t *testing.T) {

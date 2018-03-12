@@ -262,18 +262,15 @@ func (w *Worker) ImportMetric(other samplers.JSONMetric) {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	if other.Scope == samplers.LocalOnly {
-		log.Error("Local metrics cannot be imported")
-		return
-	} else if other.Type == counterTypeName || other.Type == gaugeTypeName {
-		// This branch is only necessary to maintain compatibility with local
-		// Veneur's that don't send the `(JSONMetric).Scope` field.  It can be
-		// safely removed once all local instances are upgraded.
-		other.Scope = samplers.GlobalOnly
-	}
-
+	// we don't increment the processed metric counter here, it was already
+	// counted by the original veneur that sent this to us
 	w.imported++
-	w.wm.Upsert(other.MetricKey, other.Scope, other.Tags)
+	if other.Type == counterTypeName || other.Type == gaugeTypeName {
+		// this is an odd special case -- counters that are imported are global
+		w.wm.Upsert(other.MetricKey, samplers.GlobalOnly, other.Tags)
+	} else {
+		w.wm.Upsert(other.MetricKey, samplers.MixedScope, other.Tags)
+	}
 
 	switch other.Type {
 	case counterTypeName:
@@ -289,21 +286,11 @@ func (w *Worker) ImportMetric(other samplers.JSONMetric) {
 			log.WithError(err).Error("Could not merge sets")
 		}
 	case histogramTypeName:
-		ms := w.wm.histograms
-		if other.Scope == samplers.GlobalOnly {
-			ms = w.wm.globalHistograms
-		}
-
-		if err := ms[other.MetricKey].Combine(other.Value); err != nil {
+		if err := w.wm.histograms[other.MetricKey].Combine(other.Value); err != nil {
 			log.WithError(err).Error("Could not merge histograms")
 		}
 	case timerTypeName:
-		ms := w.wm.timers
-		if other.Scope == samplers.GlobalOnly {
-			ms = w.wm.globalTimers
-		}
-
-		if err := ms[other.MetricKey].Combine(other.Value); err != nil {
+		if err := w.wm.timers[other.MetricKey].Combine(other.Value); err != nil {
 			log.WithError(err).Error("Could not merge timers")
 		}
 	default:
@@ -316,13 +303,19 @@ func (w *Worker) ImportMetricGRPC(other *metricpb.Metric) (err error) {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
+	entry := log.WithFields(logrus.Fields{
+		"type":     other.Type,
+		"name":     other.Name,
+		"protocol": "grpc",
+	})
+
 	key := samplers.NewMetricKeyFromMetric(other)
 
-	// we don't increment the processed metric counter here, it was already
-	// counted by the original veneur that sent this to us
-	scope := samplers.MixedScope
-	if other.Type == metricpb.Type_Counter || other.Type == metricpb.Type_Gauge {
-		scope = samplers.GlobalOnly
+	scope := samplers.PBScopeToMetricScope(other.Scope)
+	if scope == samplers.LocalOnly {
+		err := errors.New("local-only metrics cannot be imported")
+		entry.WithError(err).Error("Failed to import a metric")
+		return err
 	}
 
 	w.wm.Upsert(key, scope, other.Tags)
@@ -338,12 +331,22 @@ func (w *Worker) ImportMetricGRPC(other *metricpb.Metric) (err error) {
 			err = fmt.Errorf("could not merge a set: %v", err)
 		}
 	case *metricpb.Metric_Histogram:
+		var ms map[samplers.MetricKey]*samplers.Histo
+
 		switch other.Type {
 		case metricpb.Type_Histogram:
-			w.wm.histograms[key].Merge(v.Histogram)
+			ms = w.wm.histograms
+			if scope == samplers.GlobalOnly {
+				ms = w.wm.globalHistograms
+			}
 		case metricpb.Type_Timer:
-			w.wm.timers[key].Merge(v.Histogram)
+			ms = w.wm.timers
+			if scope == samplers.GlobalOnly {
+				ms = w.wm.globalTimers
+			}
 		}
+
+		ms[key].Merge(v.Histogram)
 	case nil:
 		err = errors.New("Can't import a metric with a nil value")
 	default:
@@ -351,11 +354,7 @@ func (w *Worker) ImportMetricGRPC(other *metricpb.Metric) (err error) {
 	}
 
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"type":     other.Type,
-			"name":     other.Name,
-			"protocol": "grpc",
-		}).Error("Failed to import a metric")
+		entry.WithError(err).Error("Failed to import a metric")
 	}
 
 	return err

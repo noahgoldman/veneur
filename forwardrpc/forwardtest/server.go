@@ -61,6 +61,9 @@ func (s *Server) Addr() net.Addr {
 	s.startMtx.Lock()
 	defer s.startMtx.Unlock()
 
+	if s.lis == nil {
+		panic("can't get the address of a test server before it is started")
+	}
 	return s.lis.Addr()
 }
 

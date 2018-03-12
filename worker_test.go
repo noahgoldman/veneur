@@ -113,11 +113,19 @@ func TestWorkerImportHistogram(t *testing.T) {
 	assert.Len(t, wm.histograms, 1, "number of flushed histograms")
 }
 
-func exportMetricAndFlush(t testing.TB, exp metricExporter) WorkerMetrics {
+func exportMetricAndFlush(
+	t testing.TB,
+	exp metricExporter,
+	mType metricpb.Type,
+	scope metricpb.Scope,
+) WorkerMetrics {
 	w := NewWorker(1, nil, logrus.New())
 	m, err := exp.Metric()
 	assert.NoErrorf(t, err, "exporting the metric '%s' shouldn't have failed",
 		exp.GetName())
+
+	m.Type = mType
+	m.Scope = scope
 
 	assert.NoError(t, w.ImportMetricGRPC(m), "importing a metric shouldn't "+
 		"have failed")
@@ -130,15 +138,41 @@ func TestWorkerImportMetricGRPC(t *testing.T) {
 		h := samplers.NewHist("test.histo", nil)
 		h.Sample(1.0, 1.0)
 
-		assert.Len(t, exportMetricAndFlush(t, h).histograms, 1,
+		wms := exportMetricAndFlush(t, h, metricpb.Type_Histogram, metricpb.Scope_MIXED)
+		assert.Len(t, wms.histograms, 1,
 			"The number of flushed histograms is not correct")
+	})
+	t.Run("global histogram", func(t *testing.T) {
+		t.Parallel()
+		h := samplers.NewHist("test.histo", nil)
+		h.Sample(1.0, 1.0)
+
+		wms := exportMetricAndFlush(t, h, metricpb.Type_Histogram, metricpb.Scope_GLOBAL)
+		assert.Len(t, wms.globalHistograms, 1,
+			"The number of flushed global histograms is not correct")
+	})
+	t.Run("local histogram should fail", func(t *testing.T) {
+		t.Parallel()
+		h := samplers.NewHist("test.histo", nil)
+		h.Sample(1.0, 1.0)
+
+		w := NewWorker(1, nil, logrus.New())
+		m, err := h.Metric()
+		assert.NoErrorf(t, err, "exporting the metric '%s' shouldn't have failed",
+			h.GetName())
+
+		m.Scope = metricpb.Scope_LOCAL
+
+		assert.Error(t, w.ImportMetricGRPC(m), "importing a local-only metric "+
+			"should have failed")
 	})
 	t.Run("gauge", func(t *testing.T) {
 		t.Parallel()
 		g := samplers.NewGauge("test.gauge", nil)
 		g.Sample(2.0, 1.0)
 
-		assert.Len(t, exportMetricAndFlush(t, g).globalGauges, 1,
+		wms := exportMetricAndFlush(t, g, metricpb.Type_Gauge, metricpb.Scope_GLOBAL)
+		assert.Len(t, wms.globalGauges, 1,
 			"The number of flushed gauges is not correct")
 	})
 	t.Run("counter", func(t *testing.T) {
@@ -146,22 +180,25 @@ func TestWorkerImportMetricGRPC(t *testing.T) {
 		c := samplers.NewCounter("test.counter", nil)
 		c.Sample(2.0, 1.0)
 
-		assert.Len(t, exportMetricAndFlush(t, c).globalCounters, 1,
+		wms := exportMetricAndFlush(t, c, metricpb.Type_Counter, metricpb.Scope_GLOBAL)
+		assert.Len(t, wms.globalCounters, 1,
 			"The number of flushed counters is not correct")
 	})
 	t.Run("timer", func(t *testing.T) {
 		t.Parallel()
-		w := NewWorker(1, nil, logrus.New())
-		h := samplers.NewHist("test.timer", nil)
+		h := samplers.NewHist("test.histo", nil)
 		h.Sample(1.0, 1.0)
 
-		m, err := h.Metric()
-		assert.NoErrorf(t, err, "exporting the histogram shouldn't have failed")
-		m.Type = metricpb.Type_Timer
+		wms := exportMetricAndFlush(t, h, metricpb.Type_Timer, metricpb.Scope_MIXED)
+		assert.Len(t, wms.timers, 1, "The number of flushed timers is not correct")
+	})
+	t.Run("global timer", func(t *testing.T) {
+		t.Parallel()
+		h := samplers.NewHist("test.histo", nil)
+		h.Sample(1.0, 1.0)
 
-		assert.NoError(t, w.ImportMetricGRPC(m), "importing a timer shouldn't "+
-			"have failed")
-		assert.Len(t, w.Flush().timers, 1, "The number of flushed "+
+		wms := exportMetricAndFlush(t, h, metricpb.Type_Timer, metricpb.Scope_GLOBAL)
+		assert.Len(t, wms.globalTimers, 1, "The number of flushed global timers"+
 			"timers is not correct")
 	})
 	t.Run("set", func(t *testing.T) {
@@ -169,8 +206,8 @@ func TestWorkerImportMetricGRPC(t *testing.T) {
 		s := samplers.NewSet("test.set", nil)
 		s.Sample("value", 1.0)
 
-		assert.Len(t, exportMetricAndFlush(t, s).sets, 1,
-			"The number of flushed sets is not correct")
+		wms := exportMetricAndFlush(t, s, metricpb.Type_Set, metricpb.Scope_MIXED)
+		assert.Len(t, wms.sets, 1, "The number of flushed sets is not correct")
 	})
 }
 

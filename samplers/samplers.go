@@ -3,7 +3,6 @@ package samplers
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/gob"
 	"fmt"
 	"math"
 	"strings"
@@ -101,8 +100,7 @@ type JSONMetric struct {
 	Tags []string `json:"tags"`
 	// the Value is an internal representation of the metric's contents, eg a
 	// gob-encoded histogram or hyperloglog.
-	Value []byte      `json:"value"`
-	Scope MetricScope `json:"scope"`
+	Value []byte `json:"value"`
 }
 
 const sinkPrefix string = "veneursinkonly:"
@@ -572,30 +570,10 @@ func (h *Histo) Flush(interval time.Duration, percentiles []float64, aggregates 
 	return metrics
 }
 
-// HistoValue is a serializable version of a Histo that will be sent as the
-// Value of a JSONMetric, gob-encoded.
-type HistoValue struct {
-	TDigest       *tdigest.MergingDigest
-	Weight        float64
-	Min           float64
-	Max           float64
-	Sum           float64
-	ReciprocalSum float64
-}
-
 // Export converts a Histogram into a JSONMetric
 func (h *Histo) Export() (JSONMetric, error) {
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	hval := HistoValue{
-		TDigest:       h.tDigest,
-		Weight:        h.weight,
-		Min:           h.min,
-		Max:           h.max,
-		Sum:           h.sum,
-		ReciprocalSum: h.reciprocalSum,
-	}
-	if err := enc.Encode(hval); err != nil {
+	val, err := h.tDigest.GobEncode()
+	if err != nil {
 		return JSONMetric{}, err
 	}
 	return JSONMetric{
@@ -605,36 +583,18 @@ func (h *Histo) Export() (JSONMetric, error) {
 			JoinedTags: strings.Join(h.Tags, ","),
 		},
 		Tags:  h.Tags,
-		Value: buf.Bytes(),
+		Value: val,
 	}, nil
 }
 
 // Combine merges the values of a histogram with another histogram
 // (marshalled as a byte slice)
 func (h *Histo) Combine(other []byte) error {
-	var val HistoValue
-	dec := gob.NewDecoder(bytes.NewReader(other))
-
-	if err := dec.Decode(&val); err != nil {
-		// To support the old binary format, try to directly decode just
-		// a tdigest.  This should probably be removed in a future breaking
-		// release. This allows upgrading global instances first, while still
-		// being compatible with non-updated local instances.
-		otherHistogram := tdigest.NewMerging(100, false)
-		if err := otherHistogram.GobDecode(other); err != nil {
-			return fmt.Errorf("failed to unmarshal the Histo value: %v", err)
-		}
-
-		h.tDigest.Merge(otherHistogram)
-		return nil
+	otherHistogram := tdigest.NewMerging(100, false)
+	if err := otherHistogram.GobDecode(other); err != nil {
+		return err
 	}
-
-	h.tDigest.Merge(val.TDigest)
-	h.weight += val.Weight
-	h.min = math.Min(h.min, val.Min)
-	h.max = math.Max(h.max, val.Max)
-	h.sum += val.Sum
-	h.reciprocalSum += val.ReciprocalSum
+	h.tDigest.Merge(otherHistogram)
 	return nil
 }
 
@@ -652,7 +612,12 @@ func (h *Histo) Metric() (*metricpb.Metric, error) {
 		Tags: h.Tags,
 		Type: metricpb.Type_Histogram,
 		Value: &metricpb.Metric_Histogram{&metricpb.HistogramValue{
-			TDigest: h.tDigest.Data(),
+			TDigest:       h.tDigest.Data(),
+			Weight:        h.weight,
+			Min:           h.min,
+			Max:           h.max,
+			Sum:           h.sum,
+			ReciprocalSum: h.reciprocalSum,
 		}},
 	}, nil
 }
@@ -663,4 +628,10 @@ func (h *Histo) Merge(v *metricpb.HistogramValue) {
 	if v.TDigest != nil {
 		h.tDigest.Merge(tdigest.NewMergingFromData(v.TDigest))
 	}
+
+	h.weight += v.Weight
+	h.min = math.Min(h.min, v.Min)
+	h.max = math.Max(h.max, v.Max)
+	h.sum += v.Sum
+	h.reciprocalSum += v.ReciprocalSum
 }

@@ -6,11 +6,11 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/gob"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"strings"
 	"sync"
 
 	"math/rand"
@@ -26,8 +26,10 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/stripe/veneur/forwardrpc/forwardtest"
 	"github.com/stripe/veneur/protocol"
 	"github.com/stripe/veneur/samplers"
+	"github.com/stripe/veneur/samplers/metricpb"
 	"github.com/stripe/veneur/sinks"
 	"github.com/stripe/veneur/sinks/blackhole"
 	"github.com/stripe/veneur/ssf"
@@ -311,18 +313,10 @@ func TestLocalServerMixedMetrics(t *testing.T) {
 	// test against the bytestream directly. But the two streams should unmarshal
 	// to t-digests that have the same key properties, so we can test
 	// those.
-	const ExpectedDigestGobStream = "\r\xff\x87\x02\x01\x02\xff\x88\x00\x01\xff\x84\x00\x007\xff\x83\x03\x01\x01\bCentroid\x01\xff\x84\x00\x01\x03\x01\x04Mean\x01\b\x00\x01\x06Weight\x01\b\x00\x01\aSamples\x01\xff\x86\x00\x00\x00\x17\xff\x85\x02\x01\x01\t[]float64\x01\xff\x86\x00\x01\b\x00\x00/\xff\x88\x00\x05\x01\xfe\xf0?\x01\xfe\xf0?\x00\x01@\x01\xfe\xf0?\x00\x01\xfe\x1c@\x01\xfe\xf0?\x00\x01\xfe @\x01\xfe\xf0?\x00\x01\xfeY@\x01\xfe\xf0?\x00\x05\b\x00\xfeY@\x05\b\x00\xfe\xf0?\x05\b\x00\xfeY@"
+	const ExpectedGobStream = "\r\xff\x87\x02\x01\x02\xff\x88\x00\x01\xff\x84\x00\x007\xff\x83\x03\x01\x01\bCentroid\x01\xff\x84\x00\x01\x03\x01\x04Mean\x01\b\x00\x01\x06Weight\x01\b\x00\x01\aSamples\x01\xff\x86\x00\x00\x00\x17\xff\x85\x02\x01\x01\t[]float64\x01\xff\x86\x00\x01\b\x00\x00/\xff\x88\x00\x05\x01\xfe\xf0?\x01\xfe\xf0?\x00\x01@\x01\xfe\xf0?\x00\x01\xfe\x1c@\x01\xfe\xf0?\x00\x01\xfe @\x01\xfe\xf0?\x00\x01\xfeY@\x01\xfe\xf0?\x00\x05\b\x00\xfeY@\x05\b\x00\xfe\xf0?\x05\b\x00\xfeY@"
 	tdExpected := tdigest.NewMerging(100, false)
-	err := tdExpected.GobDecode([]byte(ExpectedDigestGobStream))
+	err := tdExpected.GobDecode([]byte(ExpectedGobStream))
 	assert.NoError(t, err, "Should not have encountered error in decoding expected gob stream")
-	expectedHistoValue := samplers.HistoValue{
-		TDigest:       tdExpected,
-		Min:           1,
-		Max:           100,
-		Sum:           118,
-		ReciprocalSum: 1.7778571428571428,
-		Weight:        5,
-	}
 
 	var HistogramValues = []float64{1.0, 2.0, 7.0, 8.0, 100.0}
 
@@ -350,16 +344,39 @@ func TestLocalServerMixedMetrics(t *testing.T) {
 	// This represents the global veneur instance, which receives request from
 	// the local veneur instances, aggregates the data, and sends it to the remote API
 	// (e.g. Datadog)
-	globalVal := make(chan samplers.HistoValue, 1)
-	globalVeneur := newGlobalImportServer(t, func(metrics []samplers.JSONMetric) {
+	globalTD := make(chan *tdigest.MergingDigest)
+	globalVeneur := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, r.URL.Path, "/import", "Global veneur should receive request on /import path")
+
+		zr, err := zlib.NewReader(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		type requestItem struct {
+			Name      string      `json:"name"`
+			Tags      interface{} `json:"tags"`
+			Tagstring string      `json:"tagstring"`
+			Type      string      `json:"type"`
+			Value     []byte      `json:"value"`
+		}
+
+		var metrics []requestItem
+
+		err = json.NewDecoder(zr).Decode(&metrics)
+		if err != nil {
+			t.Fatal(err)
+		}
+
 		assert.Equal(t, 1, len(metrics), "incorrect number of elements in the flushed series")
 
-		var val samplers.HistoValue
-		dec := gob.NewDecoder(bytes.NewReader(metrics[0].Value))
-		err := dec.Decode(&val)
+		td := tdigest.NewMerging(100, false)
+		err = td.GobDecode(metrics[0].Value)
 		assert.NoError(t, err, "Should not have encountered error in decoding gob stream")
-		globalVal <- val
-	})
+		globalTD <- td
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer globalVeneur.Close()
 
 	config := localConfig()
 	config.ForwardAddress = globalVeneur.URL
@@ -397,13 +414,13 @@ func TestLocalServerMixedMetrics(t *testing.T) {
 	f.server.Flush(context.TODO())
 
 	// the global veneur instance should get valid data
-	val := <-globalVal
-	assert.Equal(t, expectedMetrics["a.b.c.min"], val.TDigest.Min(), "Minimum value is incorrect")
-	assert.Equal(t, expectedMetrics["a.b.c.max"], val.TDigest.Max(), "Maximum value is incorrect")
+	td := <-globalTD
+	assert.Equal(t, expectedMetrics["a.b.c.min"], td.Min(), "Minimum value is incorrect")
+	assert.Equal(t, expectedMetrics["a.b.c.max"], td.Max(), "Maximum value is incorrect")
 
 	// The remote server receives the raw count, *not* the normalized count
-	assert.InEpsilon(t, HistogramCountRaw, val.TDigest.Count(), ε)
-	assert.Equal(t, expectedHistoValue, val, "Underlying tdigest structure is incorrect")
+	assert.InEpsilon(t, HistogramCountRaw, td.Count(), ε)
+	assert.Equal(t, tdExpected, td, "Underlying tdigest structure is incorrect")
 }
 
 func TestSplitBytes(t *testing.T) {
@@ -1255,22 +1272,22 @@ func TestGenerateExcludeTags(t *testing.T) {
 // behavior of histograms
 type scopedMetric struct {
 	name  string
-	mType string
-	scope samplers.MetricScope
+	mType metricpb.Type
+	scope metricpb.Scope
 }
 
 // multipleHistoMetrics are fixtures used in tests for the forwarding and
 // flushing functionality of histograms
 var multipleHistoMetrics = []scopedMetric{
-	scopedMetric{"histogram.mixed.scope", histogramTypeName, samplers.MixedScope},
-	scopedMetric{"histogram.global.scope", histogramTypeName, samplers.GlobalOnly},
-	scopedMetric{"histogram.local.scope", histogramTypeName, samplers.LocalOnly},
-	scopedMetric{"timer.mixed.scope", timerTypeName, samplers.MixedScope},
-	scopedMetric{"timer.global.scope", timerTypeName, samplers.GlobalOnly},
-	scopedMetric{"timer.local.scope", timerTypeName, samplers.LocalOnly},
+	scopedMetric{"histogram.mixed.scope", metricpb.Type_Histogram, metricpb.Scope_MIXED},
+	scopedMetric{"histogram.global.scope", metricpb.Type_Histogram, metricpb.Scope_GLOBAL},
+	scopedMetric{"histogram.local.scope", metricpb.Type_Histogram, metricpb.Scope_LOCAL},
+	scopedMetric{"timer.mixed.scope", metricpb.Type_Histogram, metricpb.Scope_MIXED},
+	scopedMetric{"timer.global.scope", metricpb.Type_Histogram, metricpb.Scope_GLOBAL},
+	scopedMetric{"timer.local.scope", metricpb.Type_Histogram, metricpb.Scope_LOCAL},
 }
 
-// Test all of the different histogram forwarding scope, when submitted to
+// Test all of the different histogram forwarding scopes, when submitted to
 // a local Veneur.
 func TestHistogramsMultipleScopesLocal(t *testing.T) {
 	// initialize a local server
@@ -1278,14 +1295,16 @@ func TestHistogramsMultipleScopesLocal(t *testing.T) {
 	cms, _ := NewChannelMetricSink(metricsChan)
 	defer close(metricsChan)
 
-	globalMetrics := make(chan []samplers.JSONMetric)
-	globalVeneur := newGlobalImportServer(t, func(metrics []samplers.JSONMetric) {
-		globalMetrics <- metrics
+	globalMetrics := make(chan []*metricpb.Metric)
+	globalVeneur := forwardtest.NewServer(func(ms []*metricpb.Metric) {
+		globalMetrics <- ms
 	})
-	defer globalVeneur.Close()
+	globalVeneur.Start(t)
+	defer globalVeneur.Stop()
 
 	config := localConfig()
-	config.ForwardAddress = globalVeneur.URL
+	config.ForwardAddress = globalVeneur.Addr().String()
+	config.ForwardUseGrpc = true
 	local := newFixture(t, config, cms, nil)
 	defer local.Close()
 
@@ -1295,12 +1314,12 @@ func TestHistogramsMultipleScopesLocal(t *testing.T) {
 			local.server.Workers[0].ProcessMetric(&samplers.UDPMetric{
 				MetricKey: samplers.MetricKey{
 					Name: m.name,
-					Type: m.mType,
+					Type: strings.ToLower(m.mType.String()),
 				},
 				Value:      value,
 				Digest:     12345,
 				SampleRate: 1.0,
-				Scope:      m.scope,
+				Scope:      samplers.PBScopeToMetricScope(m.scope),
 			})
 		}
 	}
@@ -1315,9 +1334,9 @@ func TestHistogramsMultipleScopesLocal(t *testing.T) {
 			"gloobal histograms together")
 
 	// Check that the correct metrics were forwarded
-	jsonMetrics := <-globalMetrics
+	ms := <-globalMetrics
 	var globals []scopedMetric
-	for _, m := range jsonMetrics {
+	for _, m := range ms {
 		globals = append(globals, scopedMetric{m.Name, m.Type, m.Scope})
 	}
 
@@ -1352,12 +1371,12 @@ func TestHistogramsMultipleScopesGlobal(t *testing.T) {
 			h := samplers.NewHist(m.name, []string{})
 			h.Sample(value, 1)
 
-			jm, err := h.Export()
+			exported, err := h.Metric()
 			assert.NoError(t, err, "Exporting the histogram shouldn't have failed")
-			jm.Type = m.mType
-			jm.Scope = m.scope
+			exported.Type = m.mType
+			exported.Scope = m.scope
 
-			local.server.Workers[0].ImportMetric(jm)
+			local.server.Workers[0].ImportMetricGRPC(exported)
 		}
 	}
 
