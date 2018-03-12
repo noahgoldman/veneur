@@ -652,7 +652,7 @@ func (h *Histo) Metric() (*metricpb.Metric, error) {
 		Tags: h.Tags,
 		Type: metricpb.Type_Histogram,
 		Value: &metricpb.Metric_Histogram{&metricpb.HistogramValue{
-			TDigest: h.Value.Data(),
+			TDigest: h.tDigest.Data(),
 		}},
 	}, nil
 }
@@ -661,6 +661,6 @@ func (h *Histo) Metric() (*metricpb.Metric, error) {
 // of this one.
 func (h *Histo) Merge(v *metricpb.HistogramValue) {
 	if v.TDigest != nil {
-		h.Value.Merge(tdigest.NewMergingFromData(v.TDigest))
+		h.tDigest.Merge(tdigest.NewMergingFromData(v.TDigest))
 	}
 }

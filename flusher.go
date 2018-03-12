@@ -423,25 +423,32 @@ func (s *Server) exportForwardMetrics(wms []WorkerMetrics) []*metricpb.Metric {
 	bufLen := 0
 	for _, wm := range wms {
 		bufLen += len(wm.histograms) + len(wm.sets) + len(wm.timers) +
-			len(wm.globalCounters) + len(wm.globalGauges)
+			len(wm.globalCounters) + len(wm.globalGauges) +
+			len(wm.globalHistograms) + len(wm.globalTimers)
 	}
 
 	metrics := make([]*metricpb.Metric, 0, bufLen)
 	for _, wm := range wms {
 		for _, count := range wm.globalCounters {
-			metrics = s.appendExportMetric(metrics, count, metricpb.Type_Counter)
+			metrics = s.appendExportMetric(metrics, count, metricpb.Type_Counter, metricpb.Scope_GLOBAL)
 		}
 		for _, gauge := range wm.globalGauges {
-			metrics = s.appendExportMetric(metrics, gauge, metricpb.Type_Gauge)
+			metrics = s.appendExportMetric(metrics, gauge, metricpb.Type_Gauge, metricpb.Scope_GLOBAL)
 		}
 		for _, histo := range wm.histograms {
-			metrics = s.appendExportMetric(metrics, histo, metricpb.Type_Histogram)
+			metrics = s.appendExportMetric(metrics, histo, metricpb.Type_Histogram, metricpb.Scope_MIXED)
+		}
+		for _, histo := range wm.globalHistograms {
+			metrics = s.appendExportMetric(metrics, histo, metricpb.Type_Histogram, metricpb.Scope_GLOBAL)
 		}
 		for _, set := range wm.sets {
-			metrics = s.appendExportMetric(metrics, set, metricpb.Type_Set)
+			metrics = s.appendExportMetric(metrics, set, metricpb.Type_Set, metricpb.Scope_MIXED)
 		}
 		for _, timer := range wm.timers {
-			metrics = s.appendExportMetric(metrics, timer, metricpb.Type_Timer)
+			metrics = s.appendExportMetric(metrics, timer, metricpb.Type_Timer, metricpb.Scope_MIXED)
+		}
+		for _, timer := range wm.globalTimers {
+			metrics = s.appendExportMetric(metrics, timer, metricpb.Type_Timer, metricpb.Scope_GLOBAL)
 		}
 	}
 
@@ -457,7 +464,12 @@ type metricExporter interface {
 // appendExportMetric appends the exported version of the input metric, with
 // the inputted type.  If the export fails, the original slice is returned
 // and an error is logged
-func (s *Server) appendExportMetric(res []*metricpb.Metric, exp metricExporter, mType metricpb.Type) []*metricpb.Metric {
+func (s *Server) appendExportMetric(
+	res []*metricpb.Metric,
+	exp metricExporter,
+	mType metricpb.Type,
+	scope metricpb.Scope,
+) []*metricpb.Metric {
 	m, err := exp.Metric()
 	if err != nil {
 		log.WithFields(logrus.Fields{
@@ -475,6 +487,7 @@ func (s *Server) appendExportMetric(res []*metricpb.Metric, exp metricExporter, 
 	}
 
 	m.Type = mType
+	m.Scope = scope
 	return append(res, m)
 }
 

@@ -11,6 +11,8 @@ message Metric {
     repeated string tags = 2;
     Type type = 3;
 
+    Scope scope = 4;
+
     oneof value {
         CounterValue counter = 5;
         GaugeValue gauge = 6;
@@ -26,6 +28,13 @@ enum Type {
     Histogram = 2;
     Set = 3;
     Timer = 4;
+}
+
+// Scope defines what Veneur (global or local) should emit certain metrics
+enum Scope {
+    MIXED = 0;
+    LOCAL = 1;
+    GLOBAL = 2;
 }
 
 // CounterValue wraps the value of a counter
