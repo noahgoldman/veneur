@@ -1111,6 +1111,7 @@ func TestSSFMetricsEndToEnd(t *testing.T) {
 	config := localConfig()
 	config.SsfListenAddresses = []string{ssfAddr}
 	metricsChan := make(chan []samplers.InterMetric, 10)
+	defer close(metricsChan)
 	cms, _ := NewChannelMetricSink(metricsChan)
 	f := newFixture(t, config, cms, nil)
 	defer f.Close()
@@ -1139,19 +1140,14 @@ func TestSSFMetricsEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.TODO(), 500*time.Millisecond)
 	defer cancel()
-	go func() {
-		<-ctx.Done()
-		close(metricsChan)
-	}()
 	keepFlushing(ctx, f.server)
 
 	n := 0
-	for metrics := range metricsChan {
-		for _, m := range metrics {
-			for _, tag := range m.Tags {
-				if tag == "purpose:testing" {
-					n++
-				}
+	metrics := <-metricsChan
+	for _, m := range metrics {
+		for _, tag := range m.Tags {
+			if tag == "purpose:testing" {
+				n++
 			}
 		}
 	}
@@ -1172,6 +1168,7 @@ func TestInternalSSFMetricsEndToEnd(t *testing.T) {
 	config := localConfig()
 	config.SsfListenAddresses = []string{ssfAddr}
 	metricsChan := make(chan []samplers.InterMetric, 10)
+	defer close(metricsChan)
 	cms, _ := NewChannelMetricSink(metricsChan)
 	f := newFixture(t, config, cms, nil)
 	defer f.Close()
@@ -1194,19 +1191,14 @@ func TestInternalSSFMetricsEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
 	defer cancel()
-	go func() {
-		<-ctx.Done()
-		close(metricsChan)
-	}()
 	keepFlushing(ctx, f.server)
 
 	n := 0
-	for metrics := range metricsChan {
-		for _, m := range metrics {
-			for _, tag := range m.Tags {
-				if tag == "purpose:testing" {
-					n++
-				}
+	metrics := <-metricsChan
+	for _, m := range metrics {
+		for _, tag := range m.Tags {
+			if tag == "purpose:testing" {
+				n++
 			}
 		}
 	}
@@ -1324,5 +1316,43 @@ func BenchmarkHandleSSF(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		f.server.handleSSF(spans[i%LEN], baseTags)
+	}
+}
+
+// Test that the various forwarding configuration parameters are properly
+// exclusive when initializing a server.
+func TestForwardConfigMultiple(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		httpForward bool
+		grpcForward bool
+		hasErr      bool
+	}{
+		{httpForward: false, grpcForward: false, hasErr: false},
+		{httpForward: true, grpcForward: false, hasErr: false},
+		{httpForward: false, grpcForward: true, hasErr: false},
+		{httpForward: true, grpcForward: true, hasErr: true},
+	}
+
+	for _, tc := range testCases {
+		name := fmt.Sprintf("HTTP-enabled=%t -- gRPC-enabled=%t", tc.httpForward, tc.grpcForward)
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			conf := generateConfig("")
+			if tc.httpForward {
+				conf.ForwardAddress = "http://test.com"
+			}
+			if tc.grpcForward {
+				conf.GrpcForwardAddress = "test:1"
+			}
+
+			_, err := NewFromConfig(logrus.New(), conf)
+			if err == nil && tc.hasErr {
+				t.Errorf("Creating a Server should have failed, but didn't")
+			} else if err != nil && !tc.hasErr {
+				t.Errorf("Creating a Server failed when it shouldn't have: %v", err)
+			}
+		})
 	}
 }
