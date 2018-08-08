@@ -1,7 +1,11 @@
 # 8.0.0
 
+## Incompatible Changes
+* Histograms tagged with `veneurglobalonly` will only output global aggregates, rather than sending them locally.  Aggregations such as "sum", "min", or "max" will be submitted from the global Veneur without a host tag.
+
 ## Added
 * Metrics can be forwarded over gRPC using veneur-proxy (and Consul).  Thanks, [noahgoldman](https://github.com/noahgoldman) and [Quantcast](https://github.com/quantcast)!
+* Histograms tagged with `veneurglobalonly` submit agregates from the global Veneur rather than flushing locally to Datadog (fixes #155).  Thanks, [noahgoldman](https://github.com/noahgoldman)!
 
 # 7.0.0, in progress
 

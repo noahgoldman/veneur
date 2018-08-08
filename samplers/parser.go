@@ -40,6 +40,23 @@ const (
 	GlobalOnly
 )
 
+// PBScopeToMetricScope converts a metricpb.Scope to a MetricScope.  This is
+// used to maintain compatbility with UDPMetrics and JSONMetrics.
+//
+// If the input scope is not known, this returns MixedScope.
+func PBScopeToMetricScope(s metricpb.Scope) MetricScope {
+	switch s {
+	case metricpb.Scope_MIXED:
+		return MixedScope
+	case metricpb.Scope_LOCAL:
+		return LocalOnly
+	case metricpb.Scope_GLOBAL:
+		return GlobalOnly
+	}
+
+	return MixedScope
+}
+
 // MetricKey is a struct used to key the metrics into the worker's map. All fields must be comparable types.
 type MetricKey struct {
 	Name       string `json:"name"`

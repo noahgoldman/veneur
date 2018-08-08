@@ -10,6 +10,7 @@ message Metric {
     string name = 1;
     repeated string tags = 2;
     Type type = 3;
+    Scope scope = 4;
 
     oneof value {
         CounterValue counter = 5;
@@ -28,6 +29,13 @@ enum Type {
     Timer = 4;
 }
 
+// Scope defines what Veneur (global or local) should emit certain metrics
+enum Scope {
+    MIXED = 0;
+    LOCAL = 1;
+    GLOBAL = 2;
+}
+
 // CounterValue wraps the value of a counter
 message CounterValue {
     int64 value = 1;
@@ -38,10 +46,15 @@ message GaugeValue {
     double value = 1;
 }
 
-// HistogramValue for now just includes the t-digest.  This can be expanded
-// to include the other values such as the sum, average, etc.
+// HistogramValue includes the t-digest, as well as other values such as the
+// sum, average, etc.
 message HistogramValue {
     tdigest.MergingDigestData t_digest = 1;
+    double weight = 2;
+    double min = 3;
+    double max = 4;
+    double sum = 5;
+    double reciprocal_sum = 6;
 }
 
 // SetValue contains a binary-encoded HyperLogLog

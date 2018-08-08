@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"strings"
 	"sync"
 
 	"math/rand"
@@ -25,8 +26,10 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/stripe/veneur/internal/forwardtest"
 	"github.com/stripe/veneur/protocol"
 	"github.com/stripe/veneur/samplers"
+	"github.com/stripe/veneur/samplers/metricpb"
 	"github.com/stripe/veneur/sinks"
 	"github.com/stripe/veneur/sinks/blackhole"
 	"github.com/stripe/veneur/ssf"
@@ -1402,4 +1405,179 @@ func BenchmarkHandleSSF(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		f.server.handleSSF(spans[i%LEN], "packet")
 	}
+}
+
+// scopedMetric is used in tests that check the forwarding and flushing
+// behavior of histograms
+type scopedMetric struct {
+	name  string
+	mType metricpb.Type
+	scope metricpb.Scope
+}
+
+// multipleHistoMetrics are fixtures used in tests for the forwarding and
+// flushing functionality of histograms
+var multipleHistoMetrics = []scopedMetric{
+	scopedMetric{"histogram.mixed.scope", metricpb.Type_Histogram, metricpb.Scope_MIXED},
+	scopedMetric{"histogram.global.scope", metricpb.Type_Histogram, metricpb.Scope_GLOBAL},
+	scopedMetric{"histogram.local.scope", metricpb.Type_Histogram, metricpb.Scope_LOCAL},
+	scopedMetric{"timer.mixed.scope", metricpb.Type_Histogram, metricpb.Scope_MIXED},
+	scopedMetric{"timer.global.scope", metricpb.Type_Histogram, metricpb.Scope_GLOBAL},
+	scopedMetric{"timer.local.scope", metricpb.Type_Histogram, metricpb.Scope_LOCAL},
+}
+
+// Submit histograms and timers with every different scope type (local,
+// mixed, and global) to a local Veneur, then check that it flushes the
+// right metrics, and forwards the others.
+//
+// This test case should verify that local-only histograms flush all
+// metrics from the local Veneur, mixed scope histograms flush everything
+// but are still forwarded, and global-only histograms are only forwarded.
+func TestHistogramsMultipleScopesLocal(t *testing.T) {
+	// Initialize a global Veneur that flushes to a channel
+	globalMetrics := make(chan []*metricpb.Metric)
+	globalVeneur := forwardtest.NewServer(func(ms []*metricpb.Metric) {
+		globalMetrics <- ms
+	})
+	globalVeneur.Start(t)
+	defer globalVeneur.Stop()
+
+	// Initialize a local server that flushes to a channel, and forwards
+	// to the global Veneur.
+	localMetrics := make(chan []samplers.InterMetric, 10)
+	cms, _ := NewChannelMetricSink(localMetrics)
+	defer close(localMetrics)
+	config := localConfig()
+	config.ForwardAddress = globalVeneur.Addr().String()
+	config.ForwardUseGrpc = true
+	local := newFixture(t, config, cms, nil)
+	defer local.Close()
+
+	metricValues, _ := generateMetrics()
+	for _, value := range metricValues {
+		for _, m := range multipleHistoMetrics {
+			local.server.Workers[0].ProcessMetric(&samplers.UDPMetric{
+				MetricKey: samplers.MetricKey{
+					Name: m.name,
+					Type: strings.ToLower(m.mType.String()),
+				},
+				Value:      value,
+				Digest:     12345,
+				SampleRate: 1.0,
+				Scope:      samplers.PBScopeToMetricScope(m.scope),
+			})
+		}
+	}
+
+	local.server.Flush(context.Background())
+
+	// Check that the correct metrics were flushed locally
+	locals := <-localMetrics
+	expectedMetrics := 2 * (2*len(config.Aggregates) + len(config.Percentiles))
+	assert.Equal(t, expectedMetrics, len(locals),
+		"Got the wrong number of metrics when submitting normal, local, and "+
+			"gloobal histograms together")
+
+	// Check that the correct metrics were forwarded
+	ms := <-globalMetrics
+	var globals []scopedMetric
+	for _, m := range ms {
+		globals = append(globals, scopedMetric{m.Name, m.Type, m.Scope})
+	}
+
+	expected := []scopedMetric{
+		multipleHistoMetrics[0],
+		multipleHistoMetrics[1],
+		multipleHistoMetrics[3],
+		multipleHistoMetrics[4],
+	}
+	assert.ElementsMatch(t, expected, globals, "The wrong metrics were flushed from the global Veneur")
+}
+
+// Import histograms and timers with every different scope type (local,
+// mixed, and global) to a global Veneur, and check that it flushes the
+// correct metrics.
+func TestHistogramsMultipleScopesGlobalImport(t *testing.T) {
+	// Initialize a global server
+	metricsChan := make(chan []samplers.InterMetric, 10)
+	cms, _ := NewChannelMetricSink(metricsChan)
+	defer close(metricsChan)
+
+	config := globalConfig()
+	global := newFixture(t, config, cms, nil)
+	defer global.Close()
+
+	metricValues, _ := generateMetrics()
+	for _, value := range metricValues {
+		for _, m := range multipleHistoMetrics {
+			h := samplers.NewHist(m.name, []string{})
+			h.Sample(value, 1)
+
+			exported, err := h.Metric()
+			assert.NoError(t, err, "Exporting the histogram shouldn't have failed")
+			exported.Type = m.mType
+			exported.Scope = m.scope
+
+			global.server.Workers[0].ImportMetricGRPC(exported)
+		}
+	}
+
+	global.server.Flush(context.Background())
+	flushed := <-metricsChan
+
+	// The mixed and global histograms should both output percentiles, the
+	// global should output aggregates, and the local histogram should be
+	// ignored completely
+	expectedMetrics := 2 * (2*len(config.Percentiles) + len(config.Aggregates))
+	assert.Equal(t, expectedMetrics, len(flushed),
+		"Got the wrong number of metrics when importing normal, local, and "+
+			"global histograms")
+}
+
+// Submit histograms and timers with every different scope type (local,
+// mixed, and global) to a global Veneur over the "local" interface,
+// then check that it flushes all of the percentiles and aggregations.
+func TestHistogramsMultipleScopesGlobalIngest(t *testing.T) {
+	// Initialize a global server
+	metricsChan := make(chan []samplers.InterMetric, 10)
+	cms, _ := NewChannelMetricSink(metricsChan)
+	defer close(metricsChan)
+
+	config := globalConfig()
+	global := newFixture(t, config, cms, nil)
+	defer global.Close()
+
+	metricValues, _ := generateMetrics()
+	for _, value := range metricValues {
+		for _, m := range multipleHistoMetrics {
+			global.server.Workers[0].ProcessMetric(&samplers.UDPMetric{
+				MetricKey: samplers.MetricKey{
+					Name: m.name,
+					Type: strings.ToLower(m.mType.String()),
+				},
+				Value:      value,
+				Digest:     12345,
+				SampleRate: 1.0,
+				Scope:      samplers.PBScopeToMetricScope(m.scope),
+			})
+		}
+	}
+
+	global.server.Flush(context.Background())
+	flushed := <-metricsChan
+
+	// The mixed and global histograms should both output percentiles, the
+	// global should output aggregates, and the local histogram should be
+	// ignored completely
+	expectedMetrics := len(multipleHistoMetrics) * (len(config.Percentiles) + len(config.Aggregates))
+
+	var names []string
+	for _, m := range flushed {
+		names = append(names, m.Name)
+	}
+
+	t.Logf("Got metrics: %#v", names)
+	assert.Equal(t, expectedMetrics, len(flushed),
+		"Got the wrong number of metrics when ingesting normal, local, and "+
+			"global histograms")
 }

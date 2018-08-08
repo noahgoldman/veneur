@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stripe/veneur/ssf"
+	"github.com/stripe/veneur/tdigest"
 )
 
 const ε = .01
@@ -447,53 +448,120 @@ func TestHistoSampleRate(t *testing.T) {
 	assert.Equal(t, float64(10), count.Value, "count value")
 }
 
-func TestHistoMerge(t *testing.T) {
+func TestHistoExport(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 
-	h := NewHist("a.b.c", []string{"a:b"})
-	for i := 0; i < 100; i++ {
-		h.Sample(rand.NormFloat64(), 1.0)
-	}
-
+	h := histoWithSamples("a.b.c", []string{"a:b"}, 100)
 	jm, err := h.Export()
 	assert.NoError(t, err, "should have exported successfully")
 
 	h2 := NewHist("a.b.c", []string{"a:b"})
 	assert.NoError(t, h2.Combine(jm.Value), "should have combined successfully")
-	assert.InEpsilon(t, h.Value.Quantile(0.5), h2.Value.Quantile(0.5), 0.02, "50th percentiles did not match after merging")
-	assert.InDelta(t, 0, h2.LocalWeight, 0.02, "merged histogram should have count of zero")
-	assert.True(t, math.IsInf(h2.LocalMin, +1), "merged histogram should have local minimum of +inf")
-	assert.True(t, math.IsInf(h2.LocalMax, -1), "merged histogram should have local minimum of -inf")
+	assert.InEpsilon(t, h.tDigest.Quantile(0.5), h2.tDigest.Quantile(0.5), 0.02, "50th percentiles did not match after merging")
+	assert.InDelta(t, 0, h2.weight, 0.02, "merged histogram should have count of zero")
+	assert.True(t, math.IsInf(h2.min, +1), "merged histogram should have local minimum of +inf")
+	assert.True(t, math.IsInf(h2.max, -1), "merged histogram should have local minimum of -inf")
 
 	h2.Sample(1.0, 1.0)
-	assert.InDelta(t, 1.0, h2.LocalWeight, 0.02, "merged histogram should have count of 1 after adding a value")
-	assert.InDelta(t, 1.0, h2.LocalMin, 0.02, "merged histogram should have min of 1 after adding a value")
-	assert.InDelta(t, 1.0, h2.LocalMax, 0.02, "merged histogram should have max of 1 after adding a value")
+	assert.InDelta(t, 1.0, h2.weight, 0.02, "merged histogram should have count of 1 after adding a value")
+	assert.InDelta(t, 1.0, h2.min, 0.02, "merged histogram should have min of 1 after adding a value")
+	assert.InDelta(t, 1.0, h2.max, 0.02, "merged histogram should have max of 1 after adding a value")
 }
 
 // Test the Metric and Merge function on Set
 func TestHistoMergeMetric(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 
-	h := NewHist("a.b.c", []string{"a:b"})
-	for i := 0; i < 100; i++ {
-		h.Sample(rand.NormFloat64(), 1.0)
-	}
-
+	h := histoWithSamples("a.b.c", []string{"a:b"}, 100)
 	m, err := h.Metric()
 	assert.NoError(t, err, "should have created a metricpb.Metric from a Histo")
 
 	h2 := NewHist("a.b.c", []string{"a:b"})
 	h2.Merge(m.GetHistogram())
-	assert.InEpsilon(t, h.Value.Quantile(0.5), h2.Value.Quantile(0.5), 0.02, "50th percentiles did not match after merging")
-	assert.InDelta(t, 0, h2.LocalWeight, 0.02, "merged histogram should have count of zero")
-	assert.True(t, math.IsInf(h2.LocalMin, +1), "merged histogram should have local minimum of +inf")
-	assert.True(t, math.IsInf(h2.LocalMax, -1), "merged histogram should have local minimum of -inf")
+	assert.InEpsilon(t, h.tDigest.Quantile(0.5), h2.tDigest.Quantile(0.5), 0.02, "50th percentiles did not match after merging")
+	assert.Equal(t, h.weight, h2.weight, "merged histogram should have the weight of the histogram with samples")
+	assert.Equal(t, h.min, h2.min, "merged histogram should have the minimum of the histogram with samples")
+	assert.Equal(t, h.max, h2.max, "merged histogram should have the maximum of the histogram with samples")
+}
 
-	h2.Sample(1.0, 1.0)
-	assert.InDelta(t, 1.0, h2.LocalWeight, 0.02, "merged histogram should have count of 1 after adding a value")
-	assert.InDelta(t, 1.0, h2.LocalMin, 0.02, "merged histogram should have min of 1 after adding a value")
-	assert.InDelta(t, 1.0, h2.LocalMax, 0.02, "merged histogram should have max of 1 after adding a value")
+func TestHistoMergeSpecificValues(t *testing.T) {
+	rand.Seed(time.Now().Unix())
+
+	h := &Histo{
+		Name:          "a.b",
+		tDigest:       tdigest.NewMerging(100, false),
+		min:           1,
+		max:           10,
+		sum:           1,
+		weight:        1,
+		reciprocalSum: 1,
+	}
+
+	type histValues struct {
+		weight        float64
+		min           float64
+		max           float64
+		sum           float64
+		reciprocalSum float64
+	}
+
+	testCases := []struct {
+		description string
+		toCombine   *Histo
+		expected    histValues
+	}{
+		{
+			description: "values on both sides",
+			toCombine: &Histo{
+				tDigest:       tdigest.NewMerging(100, false),
+				min:           0,
+				max:           9,
+				sum:           2,
+				weight:        2,
+				reciprocalSum: 2,
+			},
+			expected: histValues{
+				weight:        3,
+				min:           0,
+				max:           10,
+				sum:           3,
+				reciprocalSum: 3,
+			},
+		},
+		{
+			description: "one side uninitialized",
+			toCombine:   NewHist("b.c", []string{}),
+			expected: histValues{
+				weight:        h.weight,
+				min:           h.min,
+				max:           h.max,
+				sum:           h.sum,
+				reciprocalSum: h.reciprocalSum,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.description, func(t *testing.T) {
+			m, err := h.Metric()
+			assert.NoError(t, err, "the histo should have exported successfully to a metric")
+			tc.toCombine.Merge(m.GetHistogram())
+
+			assert.Equal(t, tc.expected.min, tc.toCombine.min,
+				"the merged min should be correct")
+			assert.Equal(t, tc.expected.weight, tc.toCombine.weight,
+				"merged histogram should have the weight of the other")
+			assert.Equal(t, tc.expected.min, tc.toCombine.min,
+				"merged histogram should have the min of the other")
+			assert.Equal(t, tc.expected.max, tc.toCombine.max,
+				"merged histogram should have the max of the other")
+			assert.Equal(t, tc.expected.sum, tc.toCombine.sum,
+				"merged histogram should have the sum of the other")
+			assert.Equal(t, tc.expected.reciprocalSum, tc.toCombine.reciprocalSum,
+				"merged histogram should have the reciprocal sum of the other")
+		})
+	}
 }
 
 func TestMetricKeyEquality(t *testing.T) {
@@ -511,6 +579,13 @@ func TestMetricKeyEquality(t *testing.T) {
 	assert.NotEqual(t, ce1.MetricKey.String(), ce3.MetricKey.String())
 }
 
+func histoWithSamples(name string, tags []string, samples int) *Histo {
+	h := NewHist(name, tags)
+	for i := 0; i < samples; i++ {
+		h.Sample(rand.NormFloat64(), 1.0)
+	}
+	return h
+}
 func TestParseMetricSSF(t *testing.T) {
 	sample := ssf.SSFSample{
 		Metric: ssf.SSFSample_GAUGE,

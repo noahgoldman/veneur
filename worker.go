@@ -65,6 +65,10 @@ type WorkerMetrics struct {
 	globalCounters map[samplers.MetricKey]*samplers.Counter
 	// and gauges which are global
 	globalGauges map[samplers.MetricKey]*samplers.Gauge
+	// these only submit aggregations (min, max, count, etc.) from a global
+	// instance
+	globalHistograms map[samplers.MetricKey]*samplers.Histo
+	globalTimers     map[samplers.MetricKey]*samplers.Histo
 
 	// these are used for metrics that shouldn't be forwarded
 	localHistograms   map[samplers.MetricKey]*samplers.Histo
@@ -81,8 +85,10 @@ func NewWorkerMetrics() WorkerMetrics {
 		globalGauges:      map[samplers.MetricKey]*samplers.Gauge{},
 		gauges:            map[samplers.MetricKey]*samplers.Gauge{},
 		histograms:        map[samplers.MetricKey]*samplers.Histo{},
+		globalHistograms:  map[samplers.MetricKey]*samplers.Histo{},
 		sets:              map[samplers.MetricKey]*samplers.Set{},
 		timers:            map[samplers.MetricKey]*samplers.Histo{},
+		globalTimers:      map[samplers.MetricKey]*samplers.Histo{},
 		localHistograms:   map[samplers.MetricKey]*samplers.Histo{},
 		localSets:         map[samplers.MetricKey]*samplers.Set{},
 		localTimers:       map[samplers.MetricKey]*samplers.Histo{},
@@ -117,14 +123,16 @@ func (wm WorkerMetrics) Upsert(mk samplers.MetricKey, Scope samplers.MetricScope
 			}
 		}
 	case histogramTypeName:
-		if Scope == samplers.LocalOnly {
-			if _, present = wm.localHistograms[mk]; !present {
-				wm.localHistograms[mk] = samplers.NewHist(mk.Name, tags)
-			}
-		} else {
-			if _, present = wm.histograms[mk]; !present {
-				wm.histograms[mk] = samplers.NewHist(mk.Name, tags)
-			}
+		m := wm.histograms
+		switch Scope {
+		case samplers.LocalOnly:
+			m = wm.localHistograms
+		case samplers.GlobalOnly:
+			m = wm.globalHistograms
+		}
+
+		if _, present := m[mk]; !present {
+			m[mk] = samplers.NewHist(mk.Name, tags)
 		}
 	case setTypeName:
 		if Scope == samplers.LocalOnly {
@@ -137,14 +145,16 @@ func (wm WorkerMetrics) Upsert(mk samplers.MetricKey, Scope samplers.MetricScope
 			}
 		}
 	case timerTypeName:
-		if Scope == samplers.LocalOnly {
-			if _, present = wm.localTimers[mk]; !present {
-				wm.localTimers[mk] = samplers.NewHist(mk.Name, tags)
-			}
-		} else {
-			if _, present = wm.timers[mk]; !present {
-				wm.timers[mk] = samplers.NewHist(mk.Name, tags)
-			}
+		m := wm.timers
+		switch Scope {
+		case samplers.LocalOnly:
+			m = wm.localTimers
+		case samplers.GlobalOnly:
+			m = wm.globalTimers
+		}
+
+		if _, present := m[mk]; !present {
+			m[mk] = samplers.NewHist(mk.Name, tags)
 		}
 	case statusTypeName:
 		if _, present = wm.localStatusChecks[mk]; !present {
@@ -164,19 +174,32 @@ func (wm WorkerMetrics) ForwardableMetrics(cl *trace.Client) []*metricpb.Metric 
 
 	metrics := make([]*metricpb.Metric, 0, bufLen)
 	for _, count := range wm.globalCounters {
-		metrics = wm.appendExportedMetric(metrics, count, metricpb.Type_Counter, cl)
+		metrics = wm.appendExportedMetric(metrics, count, metricpb.Type_Counter,
+			metricpb.Scope_GLOBAL, cl)
 	}
 	for _, gauge := range wm.globalGauges {
-		metrics = wm.appendExportedMetric(metrics, gauge, metricpb.Type_Gauge, cl)
+		metrics = wm.appendExportedMetric(metrics, gauge, metricpb.Type_Gauge,
+			metricpb.Scope_GLOBAL, cl)
 	}
 	for _, histo := range wm.histograms {
-		metrics = wm.appendExportedMetric(metrics, histo, metricpb.Type_Histogram, cl)
+		metrics = wm.appendExportedMetric(metrics, histo, metricpb.Type_Histogram,
+			metricpb.Scope_MIXED, cl)
+	}
+	for _, histo := range wm.globalHistograms {
+		metrics = wm.appendExportedMetric(metrics, histo, metricpb.Type_Histogram,
+			metricpb.Scope_GLOBAL, cl)
 	}
 	for _, set := range wm.sets {
-		metrics = wm.appendExportedMetric(metrics, set, metricpb.Type_Set, cl)
+		metrics = wm.appendExportedMetric(metrics, set, metricpb.Type_Set,
+			metricpb.Scope_MIXED, cl)
 	}
 	for _, timer := range wm.timers {
-		metrics = wm.appendExportedMetric(metrics, timer, metricpb.Type_Timer, cl)
+		metrics = wm.appendExportedMetric(metrics, timer, metricpb.Type_Timer,
+			metricpb.Scope_MIXED, cl)
+	}
+	for _, timer := range wm.globalTimers {
+		metrics = wm.appendExportedMetric(metrics, timer, metricpb.Type_Timer,
+			metricpb.Scope_GLOBAL, cl)
 	}
 
 	return metrics
@@ -191,7 +214,13 @@ type metricExporter interface {
 // appendExportedMetric appends the exported version of the input metric, with
 // the inputted type.  If the export fails, the original slice is returned
 // and an error is logged.
-func (wm WorkerMetrics) appendExportedMetric(res []*metricpb.Metric, exp metricExporter, mType metricpb.Type, cl *trace.Client) []*metricpb.Metric {
+func (wm WorkerMetrics) appendExportedMetric(
+	res []*metricpb.Metric,
+	exp metricExporter,
+	mType metricpb.Type,
+	scope metricpb.Scope,
+	cl *trace.Client,
+) []*metricpb.Metric {
 	m, err := exp.Metric()
 	if err != nil {
 		log.WithFields(logrus.Fields{
@@ -208,6 +237,7 @@ func (wm WorkerMetrics) appendExportedMetric(res []*metricpb.Metric, exp metricE
 	}
 
 	m.Type = mType
+	m.Scope = scope
 	return append(res, m)
 }
 
@@ -284,11 +314,15 @@ func (w *Worker) ProcessMetric(m *samplers.UDPMetric) {
 			w.wm.gauges[m.MetricKey].Sample(m.Value.(float64), m.SampleRate)
 		}
 	case histogramTypeName:
-		if m.Scope == samplers.LocalOnly {
-			w.wm.localHistograms[m.MetricKey].Sample(m.Value.(float64), m.SampleRate)
-		} else {
-			w.wm.histograms[m.MetricKey].Sample(m.Value.(float64), m.SampleRate)
+		hs := w.wm.histograms
+		switch m.Scope {
+		case samplers.LocalOnly:
+			hs = w.wm.localHistograms
+		case samplers.GlobalOnly:
+			hs = w.wm.globalHistograms
 		}
+
+		hs[m.MetricKey].Sample(m.Value.(float64), m.SampleRate)
 	case setTypeName:
 		if m.Scope == samplers.LocalOnly {
 			w.wm.localSets[m.MetricKey].Sample(m.Value.(string), m.SampleRate)
@@ -296,11 +330,15 @@ func (w *Worker) ProcessMetric(m *samplers.UDPMetric) {
 			w.wm.sets[m.MetricKey].Sample(m.Value.(string), m.SampleRate)
 		}
 	case timerTypeName:
-		if m.Scope == samplers.LocalOnly {
-			w.wm.localTimers[m.MetricKey].Sample(m.Value.(float64), m.SampleRate)
-		} else {
-			w.wm.timers[m.MetricKey].Sample(m.Value.(float64), m.SampleRate)
+		ts := w.wm.timers
+		switch m.Scope {
+		case samplers.LocalOnly:
+			ts = w.wm.localTimers
+		case samplers.GlobalOnly:
+			ts = w.wm.globalTimers
 		}
+
+		ts[m.MetricKey].Sample(m.Value.(float64), m.SampleRate)
 	case statusTypeName:
 		v := float64(m.Value.(ssf.SSFSample_Status))
 		w.wm.localStatusChecks[m.MetricKey].Sample(v, m.SampleRate, m.Message, m.HostName)
@@ -355,11 +393,19 @@ func (w *Worker) ImportMetricGRPC(other *metricpb.Metric) (err error) {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
+	entry := log.WithFields(logrus.Fields{
+		"type":     other.Type,
+		"name":     other.Name,
+		"protocol": "grpc",
+	})
+
 	key := samplers.NewMetricKeyFromMetric(other)
 
-	scope := samplers.MixedScope
-	if other.Type == metricpb.Type_Counter || other.Type == metricpb.Type_Gauge {
-		scope = samplers.GlobalOnly
+	scope := samplers.PBScopeToMetricScope(other.Scope)
+	if scope == samplers.LocalOnly {
+		err := errors.New("local-only metrics cannot be imported")
+		entry.WithError(err).Error("Failed to import a metric")
+		return err
 	}
 
 	w.wm.Upsert(key, scope, other.Tags)
@@ -375,12 +421,22 @@ func (w *Worker) ImportMetricGRPC(other *metricpb.Metric) (err error) {
 			err = fmt.Errorf("could not merge a set: %v", err)
 		}
 	case *metricpb.Metric_Histogram:
+		var ms map[samplers.MetricKey]*samplers.Histo
+
 		switch other.Type {
 		case metricpb.Type_Histogram:
-			w.wm.histograms[key].Merge(v.Histogram)
+			ms = w.wm.histograms
+			if scope == samplers.GlobalOnly {
+				ms = w.wm.globalHistograms
+			}
 		case metricpb.Type_Timer:
-			w.wm.timers[key].Merge(v.Histogram)
+			ms = w.wm.timers
+			if scope == samplers.GlobalOnly {
+				ms = w.wm.globalTimers
+			}
 		}
+
+		ms[key].Merge(v.Histogram)
 	case nil:
 		err = errors.New("Can't import a metric with a nil value")
 	default:
@@ -388,11 +444,7 @@ func (w *Worker) ImportMetricGRPC(other *metricpb.Metric) (err error) {
 	}
 
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"type":     other.Type,
-			"name":     other.Name,
-			"protocol": "grpc",
-		}).Error("Failed to import a metric")
+		entry.WithError(err).Error("Failed to import a metric")
 	}
 
 	return err
