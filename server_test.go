@@ -1418,12 +1418,12 @@ type scopedMetric struct {
 // multipleHistoMetrics are fixtures used in tests for the forwarding and
 // flushing functionality of histograms
 var multipleHistoMetrics = []scopedMetric{
-	scopedMetric{"histogram.mixed.scope", metricpb.Type_Histogram, metricpb.Scope_MIXED},
-	scopedMetric{"histogram.global.scope", metricpb.Type_Histogram, metricpb.Scope_GLOBAL},
-	scopedMetric{"histogram.local.scope", metricpb.Type_Histogram, metricpb.Scope_LOCAL},
-	scopedMetric{"timer.mixed.scope", metricpb.Type_Histogram, metricpb.Scope_MIXED},
-	scopedMetric{"timer.global.scope", metricpb.Type_Histogram, metricpb.Scope_GLOBAL},
-	scopedMetric{"timer.local.scope", metricpb.Type_Histogram, metricpb.Scope_LOCAL},
+	scopedMetric{"histogram.mixed.scope", metricpb.Type_Histogram, metricpb.Scope_Mixed},
+	scopedMetric{"histogram.global.scope", metricpb.Type_Histogram, metricpb.Scope_Global},
+	scopedMetric{"histogram.local.scope", metricpb.Type_Histogram, metricpb.Scope_Local},
+	scopedMetric{"timer.mixed.scope", metricpb.Type_Histogram, metricpb.Scope_Mixed},
+	scopedMetric{"timer.global.scope", metricpb.Type_Histogram, metricpb.Scope_Global},
+	scopedMetric{"timer.local.scope", metricpb.Type_Histogram, metricpb.Scope_Local},
 }
 
 // Submit histograms and timers with every different scope type (local,

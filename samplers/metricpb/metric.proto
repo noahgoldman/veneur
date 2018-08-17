@@ -31,9 +31,9 @@ enum Type {
 
 // Scope defines what Veneur (global or local) should emit certain metrics
 enum Scope {
-    MIXED = 0;
-    LOCAL = 1;
-    GLOBAL = 2;
+    Mixed = 0;
+    Local = 1;
+    Global = 2;
 }
 
 // CounterValue wraps the value of a counter

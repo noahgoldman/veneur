@@ -46,11 +46,11 @@ const (
 // If the input scope is not known, this returns MixedScope.
 func PBScopeToMetricScope(s metricpb.Scope) MetricScope {
 	switch s {
-	case metricpb.Scope_MIXED:
+	case metricpb.Scope_Mixed:
 		return MixedScope
-	case metricpb.Scope_LOCAL:
+	case metricpb.Scope_Local:
 		return LocalOnly
-	case metricpb.Scope_GLOBAL:
+	case metricpb.Scope_Global:
 		return GlobalOnly
 	}
 

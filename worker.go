@@ -175,31 +175,31 @@ func (wm WorkerMetrics) ForwardableMetrics(cl *trace.Client) []*metricpb.Metric 
 	metrics := make([]*metricpb.Metric, 0, bufLen)
 	for _, count := range wm.globalCounters {
 		metrics = wm.appendExportedMetric(metrics, count, metricpb.Type_Counter,
-			metricpb.Scope_GLOBAL, cl)
+			metricpb.Scope_Global, cl)
 	}
 	for _, gauge := range wm.globalGauges {
 		metrics = wm.appendExportedMetric(metrics, gauge, metricpb.Type_Gauge,
-			metricpb.Scope_GLOBAL, cl)
+			metricpb.Scope_Global, cl)
 	}
 	for _, histo := range wm.histograms {
 		metrics = wm.appendExportedMetric(metrics, histo, metricpb.Type_Histogram,
-			metricpb.Scope_MIXED, cl)
+			metricpb.Scope_Mixed, cl)
 	}
 	for _, histo := range wm.globalHistograms {
 		metrics = wm.appendExportedMetric(metrics, histo, metricpb.Type_Histogram,
-			metricpb.Scope_GLOBAL, cl)
+			metricpb.Scope_Global, cl)
 	}
 	for _, set := range wm.sets {
 		metrics = wm.appendExportedMetric(metrics, set, metricpb.Type_Set,
-			metricpb.Scope_MIXED, cl)
+			metricpb.Scope_Mixed, cl)
 	}
 	for _, timer := range wm.timers {
 		metrics = wm.appendExportedMetric(metrics, timer, metricpb.Type_Timer,
-			metricpb.Scope_MIXED, cl)
+			metricpb.Scope_Mixed, cl)
 	}
 	for _, timer := range wm.globalTimers {
 		metrics = wm.appendExportedMetric(metrics, timer, metricpb.Type_Timer,
-			metricpb.Scope_GLOBAL, cl)
+			metricpb.Scope_Global, cl)
 	}
 
 	return metrics
