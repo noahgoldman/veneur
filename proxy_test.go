@@ -25,6 +25,8 @@ func generateProxyConfig() ProxyConfig {
 		ConsulRefreshInterval:    "86400s",
 		ConsulForwardServiceName: "forwardServiceName",
 		ConsulTraceServiceName:   "traceServiceName",
+		UsingDNS:                 true,
+		KubePort:                 80,
 		TraceAddress:             "127.0.0.1:8128",
 		TraceAPIAddress:          "127.0.0.1:8135",
 		HTTPAddress:              "127.0.0.1:0",
@@ -239,6 +241,18 @@ func TestTimeout(t *testing.T) {
 //
 // This also verifies that it is safe to call (*Proxy).gRPCStop() multiple times
 // as the cleanup routing (*Proxy).Shutdown() will call it again after it is
+
+
+
+
+
+
+
+
+
+
+
+
 // called in this test.
 func TestProxyStopGRPC(t *testing.T) {
 	p, err := NewProxyFromConfig(logrus.New(), generateProxyConfig())

@@ -48,6 +48,7 @@ type Proxy struct {
 	ConsulTraceService         string
 	ConsulForwardGRPCService   string
 	ConsulInterval             time.Duration
+	KubernetesDNSPort          int
 	MetricsInterval            time.Duration
 	ForwardDestinationsMtx     sync.Mutex
 	TraceDestinationsMtx       sync.Mutex
@@ -61,6 +62,7 @@ type Proxy struct {
 
 	usingConsul     bool
 	usingKubernetes bool
+	usingDNS        bool
 	enableProfiling bool
 	shutdown        chan struct{}
 	TraceClient     *trace.Client
@@ -121,6 +123,7 @@ func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err e
 	p.ConsulForwardService = conf.ConsulForwardServiceName
 	p.ConsulTraceService = conf.ConsulTraceServiceName
 	p.ConsulForwardGRPCService = conf.ConsulForwardGrpcServiceName
+	p.usingDNS = conf.UsingDNS
 
 	if p.ConsulForwardService != "" || conf.ForwardAddress != "" {
 		p.AcceptingForwards = true
@@ -151,6 +154,11 @@ func NewProxyFromConfig(logger *logrus.Logger, conf ProxyConfig) (p Proxy, err e
 		if conf.ConsulForwardServiceName != "" {
 			p.AcceptingForwards = true
 		}
+	}
+
+	if p.usingDNS {
+		p.KubernetesDNSPort = conf.KubePort
+		p.usingConsul = false
 	}
 
 	p.ForwardDestinations = consistent.New()
@@ -278,7 +286,14 @@ func (p *Proxy) Start() {
 	// it for testing.
 	config.HttpClient = p.HTTPClient
 
-	if p.usingKubernetes {
+	if p.usingDNS {
+		disc, err := NewDnsDiscoverer(p.KubernetesDNSPort)
+		if err != nil {
+			log.WithError(err).Error("Error accessing DNS server")
+		}
+		p.Discoverer = disc
+		log.Info("Set Kubernetes DNS discoverer")
+	} else if p.usingKubernetes {
 		disc, err := NewKubernetesDiscoverer()
 		if err != nil {
 			log.WithError(err).Error("Error creating KubernetesDiscoverer")

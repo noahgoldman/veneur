@@ -5,6 +5,8 @@ type ProxyConfig struct {
 	ConsulForwardServiceName     string `yaml:"consul_forward_service_name"`
 	ConsulRefreshInterval        string `yaml:"consul_refresh_interval"`
 	ConsulTraceServiceName       string `yaml:"consul_trace_service_name"`
+	UsingDNS                     bool   `yaml:"using_kubernetes_dns"`
+	KubePort                     int    `yaml:"kubernetes_service_port"`
 	Debug                        bool   `yaml:"debug"`
 	EnableProfiling              bool   `yaml:"enable_profiling"`
 	ForwardAddress               string `yaml:"forward_address"`
